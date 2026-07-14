@@ -1,0 +1,24 @@
+{
+  "name": "hrms-aisahub",
+  "version": "1.0.0",
+  "private": true,
+  "description": "HRMS Aisahub — PERN stack HR management system",
+  "scripts": {
+    "build": "pnpm -r build",
+    "lint:fix": "pnpm -r lint:fix",
+    "test": "pnpm -r --if-present test",
+    "prisma:migrate": "pnpm --filter server prisma:migrate",
+    "prisma:seed": "pnpm --filter server prisma:seed"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "esbuild",
+      "prisma"
+    ]
+  }
+}

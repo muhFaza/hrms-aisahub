@@ -1,0 +1,222 @@
+// HRMS Aisahub data model — see docs/plans/2026-07-08-hrms-design.md §3
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+}
+
+enum LeaveType {
+  PAID
+  SICK
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum HolidayType {
+  NATIONAL
+  COMPANY
+  JOINT_LEAVE
+  SPECIAL
+}
+
+enum PayrollStatus {
+  DRAFT
+  FINALIZED
+}
+
+model Role {
+  id    Int    @id @default(autoincrement())
+  name  String @unique // HR | EMPLOYEE
+  users User[]
+}
+
+model User {
+  id           Int       @id @default(autoincrement())
+  email        String    @unique
+  passwordHash String
+  roleId       Int
+  role         Role      @relation(fields: [roleId], references: [id])
+  employeeId   Int?      @unique
+  employee     Employee? @relation(fields: [employeeId], references: [id])
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  reviewedLeaveRequests   LeaveRequest[]  @relation("LeaveReviewer")
+  reviewedOvertime        Overtime[]      @relation("OvertimeReviewer")
+  reviewedReimbursements  Reimbursement[] @relation("ReimbursementReviewer")
+  finalizedPayrollPeriods PayrollPeriod[] @relation("PayrollFinalizer")
+}
+
+model Employee {
+  id                Int            @id @default(autoincrement())
+  fullName          String
+  nickname          String?
+  joinDate          DateTime
+  position          String
+  employmentType    EmploymentType
+  contractStartDate DateTime?
+  contractEndDate   DateTime?
+  contractFilePath  String?
+  monthlySalary     Decimal?       @db.Decimal(15, 2)
+  hourlyRate        Decimal?       @db.Decimal(15, 2)
+  email             String?
+  university        String?
+  major             String?
+  graduationYear    Int?
+  linkedinUrl       String?
+  religion          String?
+  thrEligible       Boolean        @default(false)
+  bankName          String?
+  bankAccountNumber String?
+  ktpNumber         String?
+  phoneNumber       String?
+  isActive          Boolean        @default(true)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  user           User?
+  leaveAccruals  LeaveAccrual[]
+  leaveRequests  LeaveRequest[]
+  dailyLogs      DailyLog[]
+  overtimes      Overtime[]
+  reimbursements Reimbursement[]
+  payslips       Payslip[]
+}
+
+model LeaveAccrual {
+  id           Int      @id @default(autoincrement())
+  employeeId   Int
+  employee     Employee @relation(fields: [employeeId], references: [id])
+  period       DateTime // first day of the accrual month
+  days         Decimal  @default(1) @db.Decimal(6, 2)
+  daysConsumed Decimal  @default(0) @db.Decimal(6, 2)
+  expiresAt    DateTime // period + 18 months
+  createdAt    DateTime @default(now())
+
+  @@unique([employeeId, period])
+}
+
+model LeaveRequest {
+  id           Int           @id @default(autoincrement())
+  employeeId   Int
+  employee     Employee      @relation(fields: [employeeId], references: [id])
+  type         LeaveType
+  startDate    DateTime
+  endDate      DateTime
+  totalDays    Decimal       @db.Decimal(6, 2) // working days excl. weekends & holidays
+  reason       String?
+  status       RequestStatus @default(PENDING)
+  reviewedById Int?
+  reviewedBy   User?         @relation("LeaveReviewer", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime?
+  rejectReason String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model Holiday {
+  id        Int         @id @default(autoincrement())
+  name      String
+  date      DateTime    @unique @db.Date
+  type      HolidayType @default(NATIONAL)
+  notes     String?
+  createdAt DateTime    @default(now())
+}
+
+model DailyLog {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  date       DateTime @db.Date
+  hours      Decimal  @db.Decimal(6, 2)
+  project    String?
+  notes      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([employeeId, date]) // one log per employee per date (design §4)
+}
+
+model Overtime {
+  id           Int           @id @default(autoincrement())
+  employeeId   Int
+  employee     Employee      @relation(fields: [employeeId], references: [id])
+  date         DateTime      @db.Date
+  hours        Decimal       @db.Decimal(6, 2)
+  description  String?
+  status       RequestStatus @default(PENDING)
+  reviewedById Int?
+  reviewedBy   User?         @relation("OvertimeReviewer", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime?
+  rejectReason String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model Reimbursement {
+  id               Int           @id @default(autoincrement())
+  employeeId       Int
+  employee         Employee      @relation(fields: [employeeId], references: [id])
+  date             DateTime      @db.Date
+  amount           Decimal       @db.Decimal(15, 2) // IDR
+  description      String?
+  evidenceFilePath String?
+  status           RequestStatus @default(PENDING)
+  reviewedById     Int?
+  reviewedBy       User?         @relation("ReimbursementReviewer", fields: [reviewedById], references: [id])
+  reviewedAt       DateTime?
+  rejectReason     String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+}
+
+model PayrollPeriod {
+  id            Int           @id @default(autoincrement())
+  year          Int
+  month         Int
+  exchangeRate  Decimal       @db.Decimal(15, 4) // IDR per USD
+  rateSource    String        @default("API") // API | FALLBACK | MANUAL (design §4 / Phase 5)
+  status        PayrollStatus @default(DRAFT)
+  finalizedAt   DateTime?
+  finalizedById Int?
+  finalizedBy   User?         @relation("PayrollFinalizer", fields: [finalizedById], references: [id])
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  payslips Payslip[]
+
+  @@unique([year, month])
+}
+
+model Payslip {
+  id                 Int           @id @default(autoincrement())
+  payrollPeriodId    Int
+  payrollPeriod      PayrollPeriod @relation(fields: [payrollPeriodId], references: [id])
+  employeeId         Int
+  employee           Employee      @relation(fields: [employeeId], references: [id])
+  basicSalary        Decimal       @db.Decimal(15, 2)
+  overtimePay        Decimal       @default(0) @db.Decimal(15, 2)
+  reimbursementTotal Decimal       @default(0) @db.Decimal(15, 2)
+  leaveDeduction     Decimal       @default(0) @db.Decimal(15, 2)
+  totalIdr           Decimal       @db.Decimal(15, 2)
+  totalUsd           Decimal       @db.Decimal(15, 2)
+  detail             Json? // full computation breakdown snapshot
+  emailSentAt        DateTime?
+  createdAt          DateTime      @default(now())
+
+  @@unique([payrollPeriodId, employeeId])
+}
