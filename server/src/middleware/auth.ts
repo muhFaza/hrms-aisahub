@@ -11,6 +11,8 @@ export interface AuthUser {
 }
 
 // Shape of the signed JWT payload (issued by the auth module in Phase 2).
+// Only userId is authoritative — roleName and employeeId are carried for
+// debugging and are re-read from the database on every request.
 export interface AuthTokenPayload {
   userId: number;
   roleName: string;
@@ -49,16 +51,19 @@ async function verifyAndAttach(req: Request, next: NextFunction): Promise<void> 
   // Reject tokens whose user has since been deleted or deactivated (single indexed PK lookup).
   const user = await prisma.user.findUnique({
     where: { id: payload.userId },
-    select: { isActive: true },
+    select: { isActive: true, employeeId: true, role: { select: { name: true } } },
   });
   if (!user || !user.isActive) {
     throw new HttpError(401, 'Account is inactive or no longer exists');
   }
 
+  // Only userId is taken from the token. Role and employee link come from the row
+  // we just read, so authorization never depends on claims that were true at login
+  // but may not be now — and the lookup is one we were already doing.
   req.user = {
     userId: payload.userId,
-    roleName: payload.roleName,
-    employeeId: payload.employeeId ?? null,
+    roleName: user.role.name,
+    employeeId: user.employeeId,
   };
   next();
 }

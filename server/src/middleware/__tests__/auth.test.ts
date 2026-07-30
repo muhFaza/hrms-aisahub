@@ -4,6 +4,7 @@ import request from 'supertest';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { authenticate } from '../auth';
 import { errorHandler } from '../errorHandler';
+import { env } from '../../config/env';
 import { prisma } from '../../config/prisma';
 import { createEmployee, createUser, resetDb, signToken } from '../../__tests__/helpers/factories';
 
@@ -113,7 +114,7 @@ describe('authenticate', () => {
       });
     });
 
-    it('normalizes a missing employeeId claim to null', async () => {
+    it('reports employeeId as null for an account with no employee profile', async () => {
       // HR accounts have no employee profile; downstream code branches on `null`,
       // so `undefined` must never reach it.
       const user = await createUser({ roleName: 'HR' });
@@ -123,10 +124,37 @@ describe('authenticate', () => {
       expect(res.body.employeeId).toBeNull();
     });
 
-    it('takes roleName from the token, not from the database', async () => {
-      // Documents a real staleness window: a role change does NOT invalidate
-      // tokens already issued, so a demoted user keeps HR access until expiry
-      // (default 12h). Only isActive is re-checked per request.
+    it('takes roleName from the database, not from the token', async () => {
+      // Role edits are blocked at the API, so this is defence in depth: even a
+      // role changed directly in the database takes effect on the next request,
+      // and a token forged with an inflated role claim gains nothing.
+      const user = await createUser({ roleName: 'EMPLOYEE' });
+      const token = jwt.sign(
+        { userId: user.id, roleName: 'HR', employeeId: null },
+        env.jwtSecret,
+      );
+
+      const res = await get(token);
+      expect(res.status).toBe(200);
+      expect(res.body.roleName).toBe('EMPLOYEE');
+    });
+
+    it('takes employeeId from the database, not from the token', async () => {
+      // Otherwise a tampered claim would scope every "own records only" query
+      // to somebody else's employee row.
+      const victim = await createEmployee();
+      const user = await createUser({ roleName: 'EMPLOYEE' });
+      const token = jwt.sign(
+        { userId: user.id, roleName: 'EMPLOYEE', employeeId: victim.id },
+        env.jwtSecret,
+      );
+
+      const res = await get(token);
+      expect(res.status).toBe(200);
+      expect(res.body.employeeId).toBeNull();
+    });
+
+    it('picks up a role changed after the token was issued', async () => {
       const user = await createUser({ roleName: 'HR' });
       const token = signToken(user);
 
@@ -139,7 +167,7 @@ describe('authenticate', () => {
 
       const res = await get(token);
       expect(res.status).toBe(200);
-      expect(res.body.roleName).toBe('HR');
+      expect(res.body.roleName).toBe('EMPLOYEE');
     });
   });
 });
