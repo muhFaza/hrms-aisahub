@@ -23,5 +23,4 @@ export const env = {
     pass: process.env.SMTP_PASS ?? '',
     from: process.env.SMTP_FROM ?? 'HRMS Aisahub <no-reply@aisahub.com>',
   },
-  ownerEmail: process.env.OWNER_EMAIL ?? 'owner@aisahub.com',
 };

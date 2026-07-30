@@ -44,7 +44,7 @@ function leaveDetailsTable(data: LeaveEmailData): string {
     </table>`;
 }
 
-// Notifies all active HR-role accounts (HR + Owner) when a leave request is submitted.
+// Notifies every active HR-role account when a leave request is submitted.
 export async function sendLeaveSubmittedEmail(data: LeaveEmailData): Promise<void> {
   const hrUsers = await prisma.user.findMany({
     where: { isActive: true, role: { name: 'HR' } },

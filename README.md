@@ -76,7 +76,6 @@ pnpm workspaces monorepo.
    SMTP_USER=your-smtp-user
    SMTP_PASS=your-smtp-password
    SMTP_FROM="HRMS Aisahub <no-reply@aisahub.com>"
-   OWNER_EMAIL=owner@aisahub.com
    ```
 
    Without valid SMTP, the app still works — email sends are logged and skipped (fire-and-forget).
@@ -128,7 +127,6 @@ All accounts use the password `password123`.
 | Email             | Role     | Type      | Notes                       |
 | ----------------- | -------- | --------- | --------------------------- |
 | hr@aisahub.com    | HR       | —         | HR administrator            |
-| owner@aisahub.com | HR       | —         | Owner (HR-role account)     |
 | budi@aisahub.com  | EMPLOYEE | Full-time | Monthly salary Rp10,000,000 |
 | sari@aisahub.com  | EMPLOYEE | Full-time | Monthly salary Rp12,000,000 |
 | andi@aisahub.com  | EMPLOYEE | Part-time | Hourly rate Rp50,000        |

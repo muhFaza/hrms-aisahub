@@ -22,7 +22,6 @@ const DEMO_PASSWORD = 'password123';
 
 const DEMO_ACCOUNTS: DemoAccount[] = [
   { email: 'hr@aisahub.com', name: 'HR Admin', tag: 'HR', color: 'volcano' },
-  { email: 'owner@aisahub.com', name: 'Owner', tag: 'HR', color: 'volcano' },
   { email: 'budi@aisahub.com', name: 'Budi Santoso', tag: 'Full-time', color: 'blue' },
   { email: 'sari@aisahub.com', name: 'Sari Wulandari', tag: 'Full-time', color: 'blue' },
   { email: 'andi@aisahub.com', name: 'Andi Pratama', tag: 'Part-time', color: 'green' },
