@@ -1,5 +1,7 @@
+import path from 'node:path';
 import express from 'express';
 import cors from 'cors';
+import { env } from './config/env';
 import { authenticate } from './middleware/auth';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { authRoutes } from './modules/auth/routes';
@@ -17,7 +19,12 @@ import { dashboardRoutes } from './modules/dashboard/routes';
 // entrypoint (index.ts) and the supertest API smoke tests (Phase 6).
 export const app = express();
 
-app.use(cors());
+// In production the client is served from this same origin (behind Traefik), so
+// cross-origin requests are never legitimate. Locally, Vite runs on :5173 and
+// needs CORS to reach the API on :5000.
+if (env.nodeEnv !== 'production') {
+  app.use(cors());
+}
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -36,6 +43,19 @@ app.use('/api/v1/overtime', authenticate, overtimeRoutes);
 app.use('/api/v1/reimbursements', authenticate, reimbursementsRoutes);
 app.use('/api/v1/payroll', authenticate, payrollRoutes);
 app.use('/api/v1/dashboard', authenticate, dashboardRoutes);
+
+// Container-only (SERVE_CLIENT=true): serve the built SPA from this same origin.
+// Registered after every /api/v1 route so unknown API paths still fall through to
+// notFoundHandler's JSON 404 rather than being answered with index.html.
+if (env.serveClient) {
+  const indexHtml = path.join(env.clientDist, 'index.html');
+
+  app.use(express.static(env.clientDist, { index: false }));
+
+  app.get(/^(?!\/api\/).*/, (_req, res) => {
+    res.sendFile(indexHtml);
+  });
+}
 
 app.use(notFoundHandler);
 app.use(errorHandler);
