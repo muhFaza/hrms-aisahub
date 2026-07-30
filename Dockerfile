@@ -22,6 +22,15 @@ WORKDIR /app
 # deps — full install (dev deps included; tsc and vite are needed to build)
 # ---------------------------------------------------------------------------
 FROM base AS deps
+# The Prisma tarballs are large (@prisma/client ~27MB, prisma ~17MB) and pnpm's
+# 60s default fetch timeout is not enough for them on a slow or congested
+# network — CI failed here with "The operation was aborted due to timeout" while
+# the same build succeeded locally. These are npm-style config env vars; pnpm 11
+# has no --fetch-timeout CLI flag.
+ENV npm_config_fetch_timeout=600000
+ENV npm_config_fetch_retries=5
+ENV npm_config_fetch_retry_maxtimeout=120000
+
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY server/package.json server/
 COPY client/package.json client/
