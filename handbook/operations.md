@@ -286,18 +286,27 @@ dependencies. It is meant to run only inside the image build.
 
 ---
 
-## 9. Known merge conflicts between this branch and `main`
+## 9. Merging this branch with `main`
 
-This branch and the containerization work on `main` both touched the same files.
+This branch and the containerization work on `main` touched several of the same files, but
+**the merge is clean — git resolves all of them automatically.** Verified by merging
+`origin/main` locally; the result is correct in each case:
 
-| File | Conflict | Resolution |
+| File | Both sides changed it | Merged result |
 | --- | --- | --- |
-| `server/package.json` | `main` moved `prisma` from `devDependencies` to `dependencies`; this branch still has it as a dev dependency | **Keep `main`'s version.** It is load-bearing: `pnpm deploy --prod` must include the Prisma CLI so the container entrypoint can run `migrate deploy` in an image that has no dev dependencies |
-| `server/src/config/env.ts` | `main` adds `SERVE_CLIENT`/`CLIENT_DIST`/`UPLOAD_DIR`; this branch removes `ownerEmail` | Take both — `main`'s additions and this branch's removal |
-| `server/.env.example` | `main` still lists `OWNER_EMAIL` | Drop it; the owner account no longer exists |
-| `README.md` | `main` adds Docker sections; this branch removes the owner seed account | Take both |
-| `vitest.config.ts` | This branch redirects tests to an isolated database | Keep this branch's version |
+| `server/package.json` | `main` moved `prisma` to `dependencies` | Keeps `main`'s `^6.19.3` in `dependencies` — load-bearing, since `pnpm deploy --prod` must include the Prisma CLI for the entrypoint's `migrate deploy` |
+| `server/src/config/env.ts` | `main` added `SERVE_CLIENT`/`CLIENT_DIST`/`UPLOAD_DIR`; this branch removed `ownerEmail` | Both applied |
+| `server/.env.example` | `main` listed `OWNER_EMAIL` | Removed |
+| `README.md` | `main` added Docker sections; this branch corrected the test and role lines | Both applied |
+| `vitest.config.ts` | Only this branch | Test isolation preserved |
 
-**One follow-up the merge creates:** the CI workflow does not install `psql`, and the test
-suite's setup step needs it to create the test database. Confirm the runner image provides
-it, or add an install step, before relying on CI after the merge.
+The full suite passes on the merged tree (113 tests).
+
+**On the test suite in CI:** the workflow does not install `psql`, which the test setup
+shells out to in order to create the test database. It works because the GitHub runner image
+already ships PostgreSQL client tools — confirmed by a green CI run on this branch — but it
+is an *implicit* dependency. If a future runner image drops them, the failure will point at
+`globalSetup`, not at the workflow.
+
+Note also that the CI `DATABASE_URL` carries `?schema=public`, which `psql` rejects outright.
+`globalSetup` strips the query string before shelling out, so that path is already handled.
