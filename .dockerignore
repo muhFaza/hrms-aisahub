@@ -1,0 +1,37 @@
+# Keep the build context small and free of host-specific or secret material.
+# Anything the image needs is either installed from the lockfile or built in-image.
+
+# Dependencies — reinstalled inside the image from pnpm-lock.yaml
+node_modules
+**/node_modules
+.pnpm-store
+
+# Build output — rebuilt inside the image
+dist
+**/dist
+*.tsbuildinfo
+
+# Secrets — never bake these into a layer
+.env
+.env.*
+!.env.example
+!.env.docker.example
+
+# Local runtime state
+server/uploads
+
+# VCS / editor / OS
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Docs and local tooling that do not affect the build
+docs
+*.md
+!README.md
+.claude
+.playwright-mcp
+*.log
