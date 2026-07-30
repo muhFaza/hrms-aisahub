@@ -54,8 +54,9 @@ export async function updateUser(id: number, actingUserId: number, input: Update
     throw new HttpError(400, 'You cannot deactivate your own account');
   }
 
+  // roleId is intentionally not updatable — see updateUserSchema. To move someone
+  // between HR and EMPLOYEE, deactivate the account and create a new one.
   const data: Prisma.UserUncheckedUpdateInput = {};
-  if (input.roleId !== undefined) data.roleId = input.roleId;
   if (input.isActive !== undefined) data.isActive = input.isActive;
   if (input.employeeId !== undefined) data.employeeId = input.employeeId;
   if (input.password !== undefined) data.passwordHash = await bcrypt.hash(input.password, 10);

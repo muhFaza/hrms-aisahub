@@ -24,8 +24,8 @@ export interface CreateUserPayload {
   employeeId?: number | null;
 }
 
+// No roleId: a user's role is fixed at creation and the API rejects changes to it.
 export interface UpdateUserPayload {
-  roleId?: number;
   isActive?: boolean;
   password?: string;
   employeeId?: number | null;
