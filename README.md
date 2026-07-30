@@ -47,8 +47,14 @@ HRMS-Thesis/
 │   │   └── index.ts        # server entrypoint (listen + accrual catch-up)
 │   ├── prisma/             # schema.prisma, migrations/, seed.ts
 │   └── vitest.config.ts    # unit + API smoke tests
-└── client/                 # Vite + React + TypeScript SPA (port 5173)
-    └── src/{api,pages,layouts,components,lib}
+├── client/                 # Vite + React + TypeScript SPA (port 5173)
+│   └── src/{api,pages,layouts,components,lib}
+├── Dockerfile              # multi-stage build; one image serves API + built SPA
+├── docker-compose.yml      # local dev stack (db :5433, API :5001, client :5173)
+├── docker-compose.prod.yml # VPS stack behind Traefik
+├── docker-entrypoint.sh    # prod container: migrate, seed-if-empty, start
+├── docker-dev-server.sh    # dev container: install, migrate, seed-if-empty, watch
+└── deploy/                 # deploy.sh + deployment runbook
 ```
 
 pnpm workspaces monorepo.
@@ -115,6 +121,16 @@ pnpm --filter client dev
 ```
 
 Health check: `GET http://localhost:5000/api/v1/health`.
+
+### Or run everything in Docker
+
+```bash
+docker compose up          # db :5433, API :5001, client :5173
+```
+
+Open http://localhost:5173. First boot installs deps, migrates, and seeds demo
+data automatically. See [deploy/README.md](deploy/README.md) for details and for
+deploying to the VPS.
 
 ## Build, lint & test
 

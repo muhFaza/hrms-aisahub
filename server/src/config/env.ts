@@ -1,3 +1,4 @@
+import path from 'node:path';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -16,6 +17,12 @@ export const env = {
   databaseUrl: required('DATABASE_URL'),
   jwtSecret: required('JWT_SECRET'),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '12h',
+  // Container-only: serve the built client from Express so API and UI share an
+  // origin behind Traefik. Unset locally, where Vite serves the client on :5173.
+  serveClient: process.env.SERVE_CLIENT === 'true',
+  clientDist: process.env.CLIENT_DIST ?? path.resolve(process.cwd(), 'client-dist'),
+  // Overridable so the container can point at a mounted volume instead of cwd.
+  uploadDir: process.env.UPLOAD_DIR ?? path.resolve(process.cwd(), 'uploads'),
   smtp: {
     host: process.env.SMTP_HOST ?? '',
     port: Number(process.env.SMTP_PORT ?? 587),

@@ -1,0 +1,103 @@
+# PRODUCTION stack for the VPS (202.74.75.193), deployed to ~/hrms/.
+#
+# Copy this file plus .env to ~/hrms/ on the server. The image is built on a dev
+# machine and shipped in — the VPS has 1GB RAM and must never build (see
+# ~/CLAUDE.md on the box). Use deploy/deploy.sh.
+#
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Traefik terminates TLS and reaches hrms-app over the shared `web` network.
+# Postgres sits on hrms-internal only: no published ports, unreachable publicly.
+
+services:
+  hrms-app:
+    image: hrms-app:deploy
+    container_name: hrms-app
+    restart: unless-stopped
+    # 1GB box: cap every service. See ~/CLAUDE.md hard constraint #1.
+    mem_limit: 192m
+    memswap_limit: 384m
+    depends_on:
+      hrms-db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@hrms-db:5432/${POSTGRES_DB}?schema=public
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-12h}
+      # Seeds demo data only when the database is empty (see docker-entrypoint.sh).
+      SEED_ON_START: ${SEED_ON_START:-true}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-HRMS Aisahub <no-reply@aisahub.com>}
+      OWNER_EMAIL: ${OWNER_EMAIL:-owner@aisahub.com}
+    volumes:
+      - hrms-uploads:/app/uploads
+    networks:
+      - web
+      - hrms-internal
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('node:http').get('http://127.0.0.1:5000/api/v1/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Generous: the first boot runs migrations and seeds before listening.
+      start_period: 90s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=web
+      - traefik.http.routers.hrms.rule=Host(`hrms.muhammadfaza.com`)
+      - traefik.http.routers.hrms.entrypoints=websecure
+      - traefik.http.routers.hrms.tls=true
+      - traefik.http.routers.hrms.tls.certresolver=le
+      - traefik.http.services.hrms.loadbalancer.server.port=5000
+
+  hrms-db:
+    image: postgres:16-alpine
+    container_name: hrms-db
+    restart: unless-stopped
+    mem_limit: 160m
+    memswap_limit: 320m
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    # Postgres defaults assume far more RAM than this box has. These keep it
+    # comfortably inside mem_limit for a demo-sized dataset.
+    command: >
+      postgres
+        -c shared_buffers=32MB
+        -c effective_cache_size=96MB
+        -c maintenance_work_mem=16MB
+        -c work_mem=2MB
+        -c max_connections=20
+        -c max_wal_size=256MB
+        -c min_wal_size=64MB
+    volumes:
+      - hrms-db-data:/var/lib/postgresql/data
+    # No `ports:` and not on `web` — reachable only from hrms-app.
+    networks:
+      - hrms-internal
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+networks:
+  web:
+    external: true
+  hrms-internal:
+    driver: bridge
+
+volumes:
+  hrms-db-data:
+  hrms-uploads:

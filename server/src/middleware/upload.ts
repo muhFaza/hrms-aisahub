@@ -2,8 +2,11 @@ import path from 'node:path';
 import fs from 'node:fs';
 import multer from 'multer';
 import { HttpError } from '../lib/httpError';
+import { env } from '../config/env';
 
-const uploadDir = path.resolve(process.cwd(), 'uploads');
+// Defaults to <cwd>/uploads; the container overrides it via UPLOAD_DIR so
+// attachments land on a mounted volume and survive redeploys.
+const uploadDir = env.uploadDir;
 fs.mkdirSync(uploadDir, { recursive: true });
 
 const allowedMimeTypes = ['application/pdf', 'image/jpeg', 'image/png'];
