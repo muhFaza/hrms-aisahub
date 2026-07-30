@@ -120,8 +120,23 @@ jobs:
           fi
 
       # Runners are x86_64, so this is a native build — no QEMU emulation.
+      # Retried because the build pulls ~450 packages from the npm registry and a
+      # single slow tarball fails the whole build; the Dockerfile also raises
+      # pnpm's fetch timeout for the large Prisma tarballs.
       - name: Build image
-        run: docker build --platform linux/amd64 -t hrms-app:deploy .
+        run: |
+          for attempt in 1 2 3; do
+            echo "::group::build attempt $attempt"
+            if docker build --platform linux/amd64 -t hrms-app:deploy .; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "build attempt $attempt failed"
+            [ "$attempt" -lt 3 ] && sleep 20
+          done
+          echo "::error::docker build failed after 3 attempts"
+          exit 1
 
       - name: Ship image to VPS
         run: |
