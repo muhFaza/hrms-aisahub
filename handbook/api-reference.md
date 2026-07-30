@@ -1,0 +1,165 @@
+# API reference
+
+Base path for everything: **`/api/v1`**. 45 endpoints across ten modules.
+
+Authentication is a bearer token: `Authorization: Bearer <jwt>`. Every route except
+`POST /auth/login` and `GET /health` requires one.
+
+"Role" below means what the *server* enforces, not what the UI shows.
+
+---
+
+## Health
+
+| Method | Path | Role | Purpose |
+| --- | --- | --- | --- |
+| GET | `/health` | public | `{status, timestamp}` |
+
+## `auth`
+
+| Method | Path | Role | Purpose |
+| --- | --- | --- | --- |
+| POST | `/auth/login` | public | Email + password → JWT and user shape |
+| GET | `/auth/me` | any | Current user plus linked employee |
+
+Login returns a deliberately generic *"Invalid email or password"* for both an unknown
+email and a wrong password, so account existence does not leak. A deactivated account gets
+a distinct message, but only **after** the password check passes.
+
+## `users` — the entire router is HR-only
+
+| Method | Path | Role | Purpose |
+| --- | --- | --- | --- |
+| GET | `/users` | HR | All accounts with role and employee name |
+| GET | `/users/roles` | HR | Role options for the form |
+| POST | `/users` | HR | Create an account |
+| PATCH | `/users/:id` | HR | Toggle active, reset password, relink employee |
+
+**`roleId` is not accepted by PATCH.** A user's role is fixed when the account is created;
+changing it requires deactivating and recreating. HR also cannot deactivate their own
+account.
+
+## `employees`
+
+| Method | Path | Role | Purpose |
+| --- | --- | --- | --- |
+| GET | `/employees` | HR | Paginated list; search / employmentType / isActive filters |
+| POST | `/employees` | HR | Create |
+| GET | `/employees/:id` | HR **or** own record | Detail |
+| PUT | `/employees/:id` | HR | Full replace |
+| POST | `/employees/:id/contract` | HR | Upload contract (multipart field `file`) |
+| GET | `/employees/:id/contract` | HR **or** own record | Download the contract |
+
+Self-access is enforced in the controller, not the router. `PUT` is a genuine full replace —
+any optional field you omit is set to `null`. Full-time requires `monthlySalary`, part-time
+requires `hourlyRate`, and KTP must be exactly 16 digits.
+
+There is no delete. Employees are deactivated via `isActive`.
+
+## `holidays`
+
+| Method | Path | Role | Purpose |
+| --- | --- | --- | --- |
+| GET | `/holidays` | any | List, optional `?year=` |
+| POST | `/holidays` | HR | Create |
+| PUT | `/holidays/:id` | HR | Update |
+| DELETE | `/holidays/:id` | HR | Hard delete |
+
+Dates are normalized to UTC midnight so they match the `YYYY-MM-DD` keys used by
+working-day counting. `Holiday.date` is unique, so a duplicate returns 409.
+
+## `leave`
+
+| Method | Path | Role | Purpose |
+| --- | --- | --- | --- |
+| GET | `/leave/balance` | any (HR must pass `?employeeId=`) | Accrual breakdown for one employee |
+| GET | `/leave/balances` | HR | One balance row per active full-timer |
+| GET | `/leave/calendar` | any | `?month=YYYY-MM` → approved leave + holidays |
+| GET | `/leave` | any, self-scoped | Paginated requests |
+| POST | `/leave` | any with an employee link | Submit |
+| PATCH | `/leave/:id/review` | HR | Approve or reject |
+| DELETE | `/leave/:id` | owner **or** HR | Cancel a PENDING request |
+
+Non-HR callers are hard-scoped to their own `employeeId`; an `employeeId` query filter from
+an employee is ignored, not honoured. Rejecting requires a reason.
+
+## `daily-logs`
+
+| Method | Path | Role | Purpose |
+| --- | --- | --- | --- |
+| GET | `/daily-logs` | any, self-scoped; HR sees all | Paginated, `?month=YYYY-MM` |
+| POST | `/daily-logs` | PART_TIME only | Log a day's hours |
+| PUT | `/daily-logs/:id` | owner **or** HR | Edit |
+| DELETE | `/daily-logs/:id` | owner **or** HR | Delete |
+
+No `requireRole` appears in this router — all authorization lives in the service. Editing a
+log that moves it to a different month checks the payroll lock on **both** months.
+
+## `overtime`
+
+| Method | Path | Role | Purpose |
+| --- | --- | --- | --- |
+| GET | `/overtime` | any, self-scoped | Paginated, `?status=` |
+| POST | `/overtime` | FULL_TIME only | Submit |
+| PATCH | `/overtime/:id/review` | HR | Approve or reject |
+| DELETE | `/overtime/:id` | **owner only** | Cancel PENDING |
+
+At most one PENDING-or-APPROVED entry per employee per date, enforced in the service (409).
+
+## `reimbursements`
+
+| Method | Path | Role | Purpose |
+| --- | --- | --- | --- |
+| GET | `/reimbursements` | any, self-scoped | Paginated, `?status=` |
+| POST | `/reimbursements` | any with an employee link | Submit + **required** evidence file |
+| GET | `/reimbursements/:id/evidence` | owner **or** HR | Download evidence |
+| PATCH | `/reimbursements/:id/review` | HR | Approve or reject |
+| DELETE | `/reimbursements/:id` | **owner only** | Cancel PENDING and unlink the file |
+
+Ordering matters on create: the upload middleware runs **before** validation, so that
+multer populates the multipart text fields first. That is why the schema uses `z.coerce` on
+`date` and `amount`.
+
+## `payroll`
+
+| Method | Path | Role | Purpose |
+| --- | --- | --- | --- |
+| GET | `/payroll/my-payslips` | any | Own finalized payslips |
+| GET | `/payroll/periods` | HR | List periods with payslip counts |
+| POST | `/payroll/periods` | HR | Create a DRAFT period, fetch the live rate |
+| GET | `/payroll/periods/:id` | HR | Preview — computed live for DRAFT, read from snapshots for FINALIZED |
+| PATCH | `/payroll/periods/:id` | HR | Override the exchange rate |
+| POST | `/payroll/periods/:id/finalize` | HR | Snapshot payslips, lock the month, email everyone |
+| DELETE | `/payroll/periods/:id` | HR | Delete a DRAFT period |
+
+`/my-payslips` is registered before `/periods/:id` so it is not swallowed by the parameter
+route. Rate override and delete both return 409 unless the period is DRAFT.
+
+## `dashboard`
+
+| Method | Path | Role | Purpose |
+| --- | --- | --- | --- |
+| GET | `/dashboard` | any | Role-shaped aggregate — the controller branches on role |
+
+One endpoint, two response shapes. An employee with no linked profile gets a zeroed shape
+rather than an error.
+
+---
+
+## Conventions
+
+**Pagination** — `page` (default 1) and `pageSize` (default 20, max 100) on every list
+endpoint.
+
+**Errors** — `{ error: string }`, plus `details: [{path, message}]` for validation failures.
+Status codes: 400 validation, 401 auth, 403 role or ownership, 404 missing, 409 conflict
+(duplicate, or a finalized payroll month).
+
+**Uploads** — 5 MB cap, MIME allowlist of PDF / JPEG / PNG. Two endpoints accept files:
+employee contracts (field `file`) and reimbursement evidence (field `evidence`). Uploaded
+files are **not** served statically — they are reachable only through the two authenticated
+download endpoints above.
+
+**Locked months** — once a payroll period is FINALIZED, any create, edit, review or cancel
+touching a record dated in that month returns
+`409 Payroll period YYYY-MM is finalized`.
