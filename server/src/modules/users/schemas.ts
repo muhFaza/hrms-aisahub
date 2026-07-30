@@ -11,9 +11,11 @@ export const createUserSchema = z.object({
   employeeId: z.coerce.number().int().positive().nullish(),
 });
 
+// roleId is deliberately absent: a user's role is fixed when the account is created.
+// Accepting it here would also reopen a staleness window, since an already-issued
+// token would keep the old role until it expired.
 export const updateUserSchema = z
   .object({
-    roleId: z.coerce.number().int().positive().optional(),
     isActive: z.boolean().optional(),
     password: z.string().min(6).optional(),
     employeeId: z.coerce.number().int().positive().nullish(),

@@ -66,10 +66,10 @@ export default function UserFormModal({
   async function onFinish(values: UserFormValues): Promise<void> {
     try {
       if (user) {
+        // roleId is omitted on purpose — role is fixed at creation.
         await updateUser.mutateAsync({
           id: user.id,
           payload: {
-            roleId: values.roleId,
             isActive: values.isActive,
             employeeId: values.employeeId ?? null,
             ...(values.password ? { password: values.password } : {}),
@@ -114,8 +114,14 @@ export default function UserFormModal({
         >
           <Input.Password placeholder={isEdit ? 'Leave blank to keep current' : ''} />
         </Form.Item>
-        <Form.Item name="roleId" label="Role" rules={[{ required: true }]}>
-          <Select options={roleOptions} />
+        {/* Shown but locked when editing: the role a user was created with is final. */}
+        <Form.Item
+          name="roleId"
+          label="Role"
+          rules={[{ required: true }]}
+          extra={isEdit ? 'Role cannot be changed after the account is created.' : undefined}
+        >
+          <Select options={roleOptions} disabled={isEdit} />
         </Form.Item>
         <Form.Item name="employeeId" label="Linked Employee">
           <Select allowClear placeholder="No linked employee" options={employeeOptions} />

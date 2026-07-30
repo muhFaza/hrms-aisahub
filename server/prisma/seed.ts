@@ -72,12 +72,9 @@ async function main() {
   const hrRole = await prisma.role.create({ data: { name: 'HR' } });
   const employeeRole = await prisma.role.create({ data: { name: 'EMPLOYEE' } });
 
-  // HR-role accounts (no employee profile): HR admin + Owner.
+  // The single HR-role account (no employee profile).
   const hrUser = await prisma.user.create({
     data: { email: 'hr@aisahub.com', passwordHash, roleId: hrRole.id },
-  });
-  await prisma.user.create({
-    data: { email: 'owner@aisahub.com', passwordHash, roleId: hrRole.id },
   });
 
   // Full-time employees (monthly salary, THR-eligible, complete profiles) with linked user accounts.
@@ -261,7 +258,7 @@ async function main() {
     data: { year: 2026, month: 6, exchangeRate: 16_250, rateSource: 'FALLBACK', status: 'DRAFT' },
   });
 
-  console.log('Seed complete: 2 roles, 6 users, 4 employees, 20 holidays, sample data.');
+  console.log('Seed complete: 2 roles, 5 users, 4 employees, 20 holidays, sample data.');
 }
 
 main()

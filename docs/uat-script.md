@@ -15,7 +15,7 @@ Reference: [`docs/plans/2026-07-08-hrms-design.md`](plans/2026-07-08-hrms-design
    - Web: `pnpm --filter client dev` → open http://localhost:5173.
 3. **Email scenarios (5, 9):** Nodemailer sends only when SMTP is configured. Set real SMTP
    credentials in `server/.env` (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`)
-   and set `OWNER_EMAIL` to an inbox you control. Without valid SMTP, submissions/finalization
+   Without valid SMTP, submissions/finalization
    still succeed — the email step is logged and skipped, so the rest of each scenario is
    unaffected.
 4. The seeded system date context is July 2026 (holidays, logs and the DRAFT payroll period are
@@ -28,7 +28,6 @@ All accounts use the password `password123`.
 | Email             | Role     | Type      | Notes                            |
 | ----------------- | -------- | --------- | -------------------------------- |
 | hr@aisahub.com    | HR       | —         | HR administrator                 |
-| owner@aisahub.com | HR       | —         | Owner (HR-role account)          |
 | budi@aisahub.com  | EMPLOYEE | Full-time | Monthly salary Rp10,000,000      |
 | sari@aisahub.com  | EMPLOYEE | Full-time | Monthly salary Rp12,000,000      |
 | andi@aisahub.com  | EMPLOYEE | Part-time | Hourly rate Rp50,000             |
@@ -42,7 +41,7 @@ All accounts use the password `password123`.
 | 2 | Employee login → employee dashboard | Log out → log in as `andi@aisahub.com` / `password123`. | Redirected to `/dashboard`. Part-time dashboard shows Logged Hours This Month, My Pending Requests, Latest Payslip, On Leave Today, Upcoming Holidays. No Employees/Payroll/Users nav items. (Log in as `budi@aisahub.com` to see the full-time variant with Leave Balance + Overtime Hours.) | |
 | 3 | HR adds a new employee (with contract upload) | As HR → **Employees** → **New Employee** → fill Full name, Join date, Position, Employment type = Full-time, Monthly salary, KTP (16 digits), email, bank details → **Save**. Open the new employee → **Contract** → upload a PDF. | Employee appears in the Employees table. Detail page shows all fields; the uploaded contract is downloadable. | |
 | 4 | Part-timer records daily activity → visible to HR | Log in as `andi@aisahub.com` → **Daily Log** → **Add Log** → pick a date, hours, project → **Save**. Log out → log in as HR → **Daily Logs**. | The entry appears in Andi's own list, and HR sees it in the Daily Logs review table (filterable by employee/month). | |
-| 5 | Full-timer submits leave → HR + Owner emailed → HR approves | Log in as `budi@aisahub.com` → **My Leave** → **Request Leave** → type = Paid, pick a future weekday range with balance available → **Submit**. (HR + Owner receive a submission email.) Log out → log in as HR → **Leave** → find the pending request → **Approve**. | Request is created (PENDING). HR + Owner receive email (if SMTP set); requester is emailed on decision. After approval: request is APPROVED, Budi's leave **balance decreases** by the working days, and the leave appears on the leave calendar. | |
+| 5 | Full-timer submits leave → HR emailed → HR approves | Log in as `budi@aisahub.com` → **My Leave** → **Request Leave** → type = Paid, pick a future weekday range with balance available → **Submit**. (HR receives a submission email.) Log out → log in as HR → **Leave** → find the pending request → **Approve**. | Request is created (PENDING). HR receives email (if SMTP set); requester is emailed on decision. After approval: request is APPROVED, Budi's leave **balance decreases** by the working days, and the leave appears on the leave calendar. | |
 | 6 | HR adds a holiday → shows in calendars & excluded from leave count | As HR → **Holidays** → **New Holiday** → name, a future weekday date, type = Company → **Save**. Then submit a Paid leave (as a full-timer) spanning that date. | Holiday appears in the Holidays list and on the leave/holiday calendar. A leave range covering that holiday counts one fewer working day (weekends and holidays are excluded from `totalDays`). | |
 | 7 | Full-timer submits overtime → HR approves | Log in as `sari@aisahub.com` → **Overtime** → **Submit Overtime** → date, hours, description → **Submit**. Log out → log in as HR → **Overtime** → **Approve** the entry. | Overtime is created (PENDING), then APPROVED. Approved overtime hours feed the payroll preview (overtime pay = hours × monthly ÷ 21 ÷ 8). | |
 | 8 | Employee submits reimbursement with evidence → HR approves | Log in as any employee → **Reimbursements** → **Submit Reimbursement** → date, amount, description, attach an image/PDF evidence → **Submit**. Log out → log in as HR → **Reimbursements** → open evidence → **Approve**. | Reimbursement is created (PENDING) with downloadable evidence, then APPROVED. Approved reimbursements are added to that month's payroll total. | |

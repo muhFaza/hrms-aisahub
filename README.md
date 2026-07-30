@@ -22,7 +22,15 @@ for the full design and [`docs/uat-script.md`](docs/uat-script.md) for the accep
 - **Dashboards** — role-scoped: HR sees headcount, pending approvals, on-leave-today, upcoming
   holidays and payroll status; employees see their balance/hours, pending items, holidays and
   latest payslip.
-- **Users admin** — HR manages accounts (create, role, active status, employee link, password reset).
+- **Users admin** — HR manages accounts (create, active status, employee link, password reset).
+  A user's role is fixed at creation and cannot be edited.
+
+## Documentation
+
+- [`CLAUDE.md`](CLAUDE.md) — conventions and invariants for AI coding agents.
+- [`AGENTS.md`](AGENTS.md) — orientation for a non-technical helper and their assistant.
+- [`handbook/`](handbook/README.md) — living reference: domain rules, data model, auth,
+  API, testing, operations, known issues, glossary.
 
 ## Structure
 
@@ -82,7 +90,6 @@ pnpm workspaces monorepo.
    SMTP_USER=your-smtp-user
    SMTP_PASS=your-smtp-password
    SMTP_FROM="HRMS Aisahub <no-reply@aisahub.com>"
-   OWNER_EMAIL=owner@aisahub.com
    ```
 
    Without valid SMTP, the app still works — email sends are logged and skipped (fire-and-forget).
@@ -133,9 +140,13 @@ pnpm lint:fix    # eslint --fix across both workspaces
 pnpm test        # runs the server Vitest suite (unit + API smoke tests)
 ```
 
-The server test suite covers the pure logic (working-day counting, leave accrual balance &
-FIFO allocation, payroll math for both employment types) plus API smoke tests for auth and RBAC.
-The API smoke tests run against the seeded database, so migrate + seed before running them.
+113 tests across 9 files. They cover the pure logic (working-day counting, leave accrual
+balance & FIFO allocation, payroll math for both employment types), the auth and RBAC
+middleware, the leave module at both service and route level, and user-account rules.
+
+The suite runs against a **separate `hrms_test` database**, created and migrated
+automatically on first run — it never touches development data. `psql` must be on your
+`PATH`. See [`handbook/testing.md`](handbook/testing.md).
 
 ## Default seed accounts
 
@@ -144,7 +155,6 @@ All accounts use the password `password123`.
 | Email             | Role     | Type      | Notes                       |
 | ----------------- | -------- | --------- | --------------------------- |
 | hr@aisahub.com    | HR       | —         | HR administrator            |
-| owner@aisahub.com | HR       | —         | Owner (HR-role account)     |
 | budi@aisahub.com  | EMPLOYEE | Full-time | Monthly salary Rp10,000,000 |
 | sari@aisahub.com  | EMPLOYEE | Full-time | Monthly salary Rp12,000,000 |
 | andi@aisahub.com  | EMPLOYEE | Part-time | Hourly rate Rp50,000        |
