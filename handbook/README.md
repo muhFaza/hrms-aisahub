@@ -35,8 +35,11 @@ returning.
 **Non-technical?** Read [AGENTS.md](../AGENTS.md) and [glossary.md](glossary.md) instead —
 those are written for you.
 
-## A note on scope
+## Keeping this accurate
 
-This branch (`tests/auth-leave-coverage`) branched before the Docker, deployment and CI work
-that lives on `main`. Those files are documented in
-[operations.md](operations.md) but are not present in this tree until the branches merge.
+These pages describe behaviour, not intentions. When you change a rule, a permission, or a
+setup step, update the page that covers it in the same change — a handbook that has drifted
+is worse than none, because it is trusted.
+
+[known-issues.md](known-issues.md) is the exception that should *shrink*: delete an entry
+when it is fixed rather than marking it resolved.

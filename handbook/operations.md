@@ -2,13 +2,6 @@
 
 Everything about getting the app running on a laptop and getting it onto the server.
 
-> **Scope note.** The Docker, deploy and CI files described here live on `main`. This
-> branch (`tests/auth-leave-coverage`) branched before that work, so you will not see
-> `Dockerfile`, `docker-compose*.yml`, `deploy/` or `.github/` in this tree until the two
-> are merged. Everything below is accurate for the merged repository.
-
----
-
 ## 1. Prerequisites
 
 | Tool | Version | Why that version |
