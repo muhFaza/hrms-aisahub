@@ -58,12 +58,46 @@ hrms.muhammadfaza.com → Traefik (TLS via certresolver `le`, network `web`)
 
 ## Redeploying
 
+Pushing to `main` deploys automatically — see [Continuous deployment](#continuous-deployment).
+To deploy by hand (or from an unmerged branch):
+
 ```bash
 ./deploy/deploy.sh
 ```
 
 Migrations run automatically on container start. Seeding does **not** re-run: the
 entrypoint seeds only when the `User` table is empty.
+
+## Continuous deployment
+
+`.github/workflows/deploy.yml` runs on every push and PR to `main`.
+
+| Job | When | What |
+|---|---|---|
+| `test` | every push and PR | lint, build, and the 24 tests against a throwaway Postgres service |
+| `deploy` | pushes to `main` only | build `linux/amd64`, ship over SSH, restart, verify |
+
+The deploy job is skipped for pull requests, so a PR gets the test gate without
+touching production. Deploys are serialised by a `deploy-vps` concurrency group
+and queue rather than cancel — an interrupted `docker load` on a 1GB box is worse
+than waiting. GitHub runners are x86_64, so the image build is native there
+rather than emulated as it is on an ARM Mac.
+
+### Required secrets
+
+Set these once (values never need to live in the repo):
+
+```bash
+gh secret set VPS_SSH_KEY < ~/repos/personal/ssh1.pem
+gh secret set VPS_HOST --body 202.74.75.193
+gh secret set VPS_USER --body fazadev
+```
+
+`~/hrms/.env` on the VPS is created once by hand and is **never** overwritten by
+CI; the deploy fails loudly if it is missing.
+
+To redeploy the current `main` without an empty commit, use the workflow's
+`workflow_dispatch` trigger (Actions → CI / Deploy → Run workflow).
 
 ## Operations
 

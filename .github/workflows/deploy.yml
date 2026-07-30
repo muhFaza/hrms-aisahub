@@ -1,0 +1,181 @@
+name: CI / Deploy
+
+# Test every push and PR; deploy only when main moves.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Lets you redeploy the current main without an empty commit.
+  workflow_dispatch:
+
+# Never let two deploys touch the VPS at once. Queue rather than cancel: a
+# half-finished `docker load` on a 1GB box is worse than waiting.
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22'
+  PNPM_VERSION: '11.17.0'
+
+jobs:
+  test:
+    name: Lint, build & test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hrms
+          POSTGRES_PASSWORD: hrms
+          POSTGRES_DB: hrms
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hrms -d hrms"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://hrms:hrms@localhost:5432/hrms?schema=public
+      JWT_SECRET: ci-only-secret-not-used-anywhere-real
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable pnpm
+        run: corepack enable && corepack prepare pnpm@${{ env.PNPM_VERSION }} --activate
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.pnpm-store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile --store-dir ~/.pnpm-store
+
+      - name: Apply migrations
+        run: pnpm --filter server exec prisma migrate deploy --schema=prisma/schema.prisma
+
+      # The API smoke tests query seeded rows, so seed before running them.
+      - name: Seed
+        run: pnpm prisma:seed
+
+      # eslint without --fix: CI should report problems, not silently rewrite files.
+      - name: Lint
+        run: pnpm -r exec eslint .
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+  deploy:
+    name: Deploy to VPS
+    needs: test
+    # Only on main, and never for pull requests.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://hrms.muhammadfaza.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          cat >> ~/.ssh/config <<EOF
+          Host vps
+            HostName ${{ secrets.VPS_HOST }}
+            User ${{ secrets.VPS_USER }}
+            IdentityFile ~/.ssh/deploy_key
+            BatchMode yes
+          EOF
+
+      # The VPS has 1GB RAM and an OOM history. Refuse rather than take down
+      # the other services sharing that box.
+      - name: Check VPS has room
+        run: |
+          ssh vps 'free -m'
+          AVAIL=$(ssh vps "free -m | awk '/^Mem:/{print \$7}'")
+          echo "available: ${AVAIL}MB"
+          if [ "$AVAIL" -lt 150 ]; then
+            echo "::error::Only ${AVAIL}MB available on the VPS; need ~150MB."
+            exit 1
+          fi
+
+      # Runners are x86_64, so this is a native build — no QEMU emulation.
+      - name: Build image
+        run: docker build --platform linux/amd64 -t hrms-app:deploy .
+
+      - name: Ship image to VPS
+        run: |
+          docker image inspect hrms-app:deploy --format '{{.Size}}' \
+            | awk '{printf "shipping ~%.0fMB uncompressed\n", $1/1024/1024}'
+          docker save hrms-app:deploy | gzip -1 | ssh vps 'gunzip | docker load'
+
+      - name: Sync compose file
+        run: |
+          ssh vps 'mkdir -p ~/hrms'
+          scp docker-compose.prod.yml vps:hrms/docker-compose.yml
+          # .env is created once by hand and never overwritten from CI.
+          ssh vps 'test -f ~/hrms/.env' || {
+            echo "::error::~/hrms/.env missing on the VPS. Create it from .env.docker.example."
+            exit 1
+          }
+
+      - name: Start containers
+        run: ssh vps 'cd ~/hrms && docker compose up -d'
+
+      - name: Wait for healthy
+        run: |
+          for i in $(seq 1 30); do
+            STATUS=$(ssh vps "docker inspect --format '{{.State.Health.Status}}' hrms-app 2>/dev/null || echo missing")
+            [ "$STATUS" = "healthy" ] && { echo "healthy"; exit 0; }
+            echo "  [$i/30] $STATUS"
+            sleep 5
+          done
+          echo "::error::hrms-app did not become healthy"
+          ssh vps 'cd ~/hrms && docker compose logs --tail 40 hrms-app'
+          exit 1
+
+      - name: Verify public endpoint
+        run: |
+          for i in $(seq 1 12); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' https://hrms.muhammadfaza.com/api/v1/health) || CODE=000
+            [ "$CODE" = "200" ] && { echo "OK: 200"; exit 0; }
+            echo "  [$i/12] -> $CODE"
+            sleep 10
+          done
+          echo "::error::https://hrms.muhammadfaza.com/api/v1/health never returned 200"
+          exit 1
+
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "### Deploy to https://hrms.muhammadfaza.com"
+            echo
+            echo '```'
+            ssh vps 'free -m; docker stats --no-stream --format "{{.Name}}  {{.MemUsage}}" | grep hrms' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
