@@ -42,7 +42,7 @@ your job to supply it rather than assume it.
 > machine, not the live system."
 
 **Say what success looks like before running something.** "This takes about a minute and
-should end with `113 passed`. If you see red text with `failed`, stop and tell me."
+should end with `142 passed`. If you see red text with `failed`, stop and tell me."
 
 **Explain the why in one sentence, then stop.** They do not need the internals. If they ask
 for more, give more.
@@ -118,7 +118,7 @@ What it does:
 | Area | In plain terms |
 | --- | --- |
 | **Employees** | Personal details, contracts, salary, bank details |
-| **Leave** | Staff request time off; HR approves. Paid leave is earned a day at a time and expires after 18 months |
+| **Leave** | Staff record time off, which takes effect immediately — there is no HR approval. Paid leave is earned a day at a time and expires after 18 months |
 | **Overtime** | Full-time staff claim extra hours; HR approves; it flows into their pay |
 | **Reimbursements** | Staff claim expenses with a photo of the receipt; HR approves |
 | **Daily logs** | Part-time staff record hours worked, which is how they get paid |
@@ -141,7 +141,7 @@ Run everything from the main project folder. Use `pnpm`, never `npm`.
 | --- | --- | --- |
 | Set up after downloading | `pnpm install` | A few minutes, ends with a package summary |
 | Start everything (easiest) | `docker compose up` | Several minutes the first time. Then open `http://localhost:5173` |
-| Run the automated checks | `pnpm test` | About 5 seconds, ends with `113 passed` |
+| Run the automated checks | `pnpm test` | About 6 seconds, ends with `142 passed` |
 | Check for code problems | `pnpm lint:fix` | Silence means it passed |
 | Reset the demo data | `pnpm prisma:seed` | **Erases the local database first.** Only ever on a local machine |
 

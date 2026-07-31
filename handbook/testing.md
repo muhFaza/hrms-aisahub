@@ -1,6 +1,8 @@
 # Testing
 
-**113 tests across 9 files, all server-side.** The client has no test tooling at all.
+**142 tests across 14 files, all server-side.** The client has no test tooling at all —
+no runner, no jsdom, no component tests. `pnpm build` typechecks it and nothing more, so
+untyped literals like the `link` route strings in `notificationCopy.tsx` are unverified.
 
 ```bash
 pnpm --filter server test
@@ -93,14 +95,16 @@ run. **The application still uses cost 10.**
 | `middleware/__tests__/auth.test.ts` | 14 | Header shape, signature and expiry, deactivation, and the database-over-token claims |
 | `middleware/__tests__/rbac.test.ts` | 7 | `requireRole` invoked directly. No database |
 | `modules/leave/__tests__/leave.routes.test.ts` | 13 | Leave through the full middleware chain |
-| `modules/leave/__tests__/leave.service.test.ts` | 42 | The deep suite — submit, review, FIFO consumption, cancel, scoping |
+| `modules/leave/__tests__/leave.service.test.ts` | 32 | The deep suite — submit, FIFO consumption, cancel window, refund, scoping |
+| `modules/payroll/__tests__/payroll.service.test.ts` | 1 | Sick leave reaches the payslip on dates alone, with no status column |
 | `modules/users/__tests__/users.routes.test.ts` | 9 | Access, role-fixed-at-creation, demotion takes effect immediately |
 
 The auth, rbac and users tests are the regression tests for the two authorization fixes on
 this branch. Treat them as a pair with the fixes — they exist to stop those bugs returning.
 
-**Not covered:** the employees, holidays, daily-logs, overtime, reimbursements,
-payroll-period and dashboard modules; file upload and download; path traversal. There is no
+**Not covered:** the employees, holidays, daily-logs, overtime, reimbursements and
+dashboard modules; payroll beyond the one sick-leave case; file upload and download; path
+traversal. There is no
 coverage threshold configured.
 
 ---
@@ -205,6 +209,11 @@ A 200 does not prove a field was rejected — Zod strips unknown keys silently.
 - **`createLeaveRequest` requires `totalDays` explicitly.** The factory does not compute it
   from the range. An inconsistent value creates a row the service would never have produced,
   and your balance assertions then test fiction.
+- **`createLeaveRequest` writes the row directly and consumes no accrual**, unlike
+  `submitLeave`. To assert on a refund, either submit through the service or set
+  `daysConsumed` on the accrual yourself.
+- **The leave suite pins "now" to 2026-07-15**, and the cancel window is judged against it:
+  a fixture starting on the 14th is already past, one starting on the 20th is not.
 - **Employment type gates the fixtures.** A daily-log test needs `PART_TIME` or the service
   403s; overtime needs `FULL_TIME`. And `joinDate` drives how many accrual days exist — the
   leave suite sets `joinDate: utc('2026-05-10')` against a July "now" precisely to get 3.

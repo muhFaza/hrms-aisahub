@@ -1,50 +1,39 @@
-import { useState } from 'react';
-import { Card, Form, Input, Modal, Select, Space, Table, Tabs, Tag, message } from 'antd';
+import { useRef, useState } from 'react';
+import { Card, Popconfirm, Table, Tabs, Tag, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { AxiosError } from 'axios';
 import {
   useLeaveRequests,
   useLeaveBalances,
-  useReviewLeave,
-  leaveStatusColor,
+  useCancelLeave,
   leaveTypeColor,
   type LeaveRequest,
-  type LeaveStatus,
   type LeaveBalanceSummary,
 } from '../../api/leave';
 import { formatDate } from '../../lib/format';
 import LeaveCalendar from '../../components/LeaveCalendar';
 
-function RequestsTab() {
-  const [status, setStatus] = useState<LeaveStatus | undefined>();
-  const [rejecting, setRejecting] = useState<LeaveRequest | null>(null);
-  const [rejectReason, setRejectReason] = useState('');
-  const { data, isLoading } = useLeaveRequests({ status, pageSize: 100 });
-  const reviewLeave = useReviewLeave();
+function AllLeaveTab() {
+  const { data, isLoading } = useLeaveRequests({ pageSize: 100 });
+  const cancelLeave = useCancelLeave();
+  // One DELETE at a time. The ref guards independently of render timing — the state alone is
+  // stale inside a click handler's closure, and a second DELETE 404s and toasts a false failure.
+  const inFlight = useRef<number | null>(null);
+  const [cancellingId, setCancellingId] = useState<number | null>(null);
 
-  async function handleApprove(record: LeaveRequest): Promise<void> {
+  async function handleCancel(id: number): Promise<void> {
+    if (inFlight.current !== null) return;
+    inFlight.current = id;
+    setCancellingId(id);
     try {
-      await reviewLeave.mutateAsync({ id: record.id, payload: { action: 'APPROVE' } });
-      message.success('Request approved');
+      await cancelLeave.mutateAsync(id);
+      message.success('Leave cancelled');
     } catch (err) {
       const axiosError = err as AxiosError<{ error?: string }>;
-      message.error(axiosError.response?.data?.error ?? 'Failed to approve');
-    }
-  }
-
-  async function handleReject(): Promise<void> {
-    if (!rejecting) return;
-    try {
-      await reviewLeave.mutateAsync({
-        id: rejecting.id,
-        payload: { action: 'REJECT', rejectReason },
-      });
-      message.success('Request rejected');
-      setRejecting(null);
-      setRejectReason('');
-    } catch (err) {
-      const axiosError = err as AxiosError<{ error?: string }>;
-      message.error(axiosError.response?.data?.error ?? 'Failed to reject');
+      message.error(axiosError.response?.data?.error ?? 'Failed to cancel leave');
+    } finally {
+      inFlight.current = null;
+      setCancellingId(null);
     }
   }
 
@@ -65,46 +54,31 @@ function RequestsTab() {
     { title: 'Working Days', dataIndex: 'totalDays', width: 120 },
     { title: 'Reason', dataIndex: 'reason', render: (value: string | null) => value ?? '-' },
     {
-      title: 'Status',
-      dataIndex: 'status',
-      render: (value: LeaveRequest['status'], record) => (
-        <Tag color={leaveStatusColor[value]} title={record.rejectReason ?? undefined}>
-          {value}
-        </Tag>
-      ),
-    },
-    {
+      // HR's override correction — unlike the employee's own page this is not limited to
+      // future leave, so a past-dated record can still be unwound.
       title: 'Actions',
-      width: 160,
-      render: (_value, record) =>
-        record.status === 'PENDING' ? (
-          <Space>
-            <a onClick={() => handleApprove(record)}>Approve</a>
-            <a style={{ color: '#ff4d4f' }} onClick={() => setRejecting(record)}>
-              Reject
+      width: 100,
+      render: (_value, record) => {
+        const busy = cancellingId !== null;
+        return (
+          <Popconfirm
+            title="Cancel this leave?"
+            description="Paid leave days are refunded to the employee's balance."
+            okButtonProps={{ loading: cancellingId === record.id }}
+            onConfirm={() => handleCancel(record.id)}
+          >
+            {/* A disabled-looking <a> still fires onClick, so the trigger is made inert. */}
+            <a style={{ color: busy ? undefined : '#ff4d4f', pointerEvents: busy ? 'none' : undefined }}>
+              Cancel
             </a>
-          </Space>
-        ) : null,
+          </Popconfirm>
+        );
+      },
     },
   ];
 
   return (
     <Card>
-      <Space style={{ marginBottom: 16 }}>
-        <Select
-          allowClear
-          placeholder="Filter status"
-          style={{ width: 180 }}
-          value={status}
-          onChange={setStatus}
-          options={[
-            { value: 'PENDING', label: 'Pending' },
-            { value: 'APPROVED', label: 'Approved' },
-            { value: 'REJECTED', label: 'Rejected' },
-          ]}
-        />
-      </Space>
-
       <Table<LeaveRequest>
         rowKey="id"
         loading={isLoading}
@@ -112,26 +86,6 @@ function RequestsTab() {
         dataSource={data?.data ?? []}
         pagination={false}
       />
-
-      <Modal
-        title="Reject Leave Request"
-        open={rejecting !== null}
-        onCancel={() => setRejecting(null)}
-        onOk={handleReject}
-        confirmLoading={reviewLeave.isPending}
-        okButtonProps={{ danger: true, disabled: !rejectReason.trim() }}
-        okText="Reject"
-      >
-        <Form layout="vertical">
-          <Form.Item label="Reason for rejection" required>
-            <Input.TextArea
-              rows={3}
-              value={rejectReason}
-              onChange={(event) => setRejectReason(event.target.value)}
-            />
-          </Form.Item>
-        </Form>
-      </Modal>
     </Card>
   );
 }
@@ -165,7 +119,7 @@ export default function LeaveReviewPage() {
   return (
     <Tabs
       items={[
-        { key: 'requests', label: 'Requests', children: <RequestsTab /> },
+        { key: 'all', label: 'All Leave', children: <AllLeaveTab /> },
         { key: 'balances', label: 'Balances', children: <BalancesTab /> },
         { key: 'calendar', label: 'Calendar', children: <LeaveCalendar /> },
       ]}

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -16,11 +16,11 @@ import {
 } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import dayjs from 'dayjs';
 import {
   useLeaveBalance,
   useLeaveRequests,
   useCancelLeave,
-  leaveStatusColor,
   leaveTypeColor,
   type LeaveRequest,
 } from '../../api/leave';
@@ -34,13 +34,23 @@ function BalanceTab({ isFullTime }: { isFullTime: boolean }) {
   const { data: balance } = useLeaveBalance();
   const { data: requests, isLoading } = useLeaveRequests({ pageSize: 100 });
   const cancelLeave = useCancelLeave();
+  // One DELETE at a time. The ref guards independently of render timing — the state alone is
+  // stale inside a click handler's closure, and a second DELETE 404s and toasts a false failure.
+  const inFlight = useRef<number | null>(null);
+  const [cancellingId, setCancellingId] = useState<number | null>(null);
 
   async function handleCancel(id: number): Promise<void> {
+    if (inFlight.current !== null) return;
+    inFlight.current = id;
+    setCancellingId(id);
     try {
       await cancelLeave.mutateAsync(id);
-      message.success('Request cancelled');
+      message.success('Leave cancelled');
     } catch {
-      message.error('Failed to cancel request');
+      message.error('Failed to cancel leave');
+    } finally {
+      inFlight.current = null;
+      setCancellingId(null);
     }
   }
 
@@ -57,26 +67,27 @@ function BalanceTab({ isFullTime }: { isFullTime: boolean }) {
     { title: 'Working Days', dataIndex: 'totalDays', width: 120 },
     { title: 'Reason', dataIndex: 'reason', render: (value: string | null) => value ?? '-' },
     {
-      title: 'Status',
-      dataIndex: 'status',
-      render: (value: LeaveRequest['status'], record) =>
-        value === 'REJECTED' && record.rejectReason ? (
-          <Tag color={leaveStatusColor[value]} title={record.rejectReason}>
-            {value}
-          </Tag>
-        ) : (
-          <Tag color={leaveStatusColor[value]}>{value}</Tag>
-        ),
-    },
-    {
+      // The server only allows self-cancellation up to and including the start date; the
+      // stored date is a UTC calendar day, so compare day strings rather than instants.
       title: 'Actions',
       width: 100,
-      render: (_value, record) =>
-        record.status === 'PENDING' ? (
-          <Popconfirm title="Cancel this request?" onConfirm={() => handleCancel(record.id)}>
-            <a style={{ color: '#ff4d4f' }}>Cancel</a>
+      render: (_value, record) => {
+        if (dayjs().format('YYYY-MM-DD') > record.startDate.slice(0, 10)) return null;
+        const busy = cancellingId !== null;
+        return (
+          <Popconfirm
+            title="Cancel this leave?"
+            description="Paid leave days are refunded to your balance."
+            okButtonProps={{ loading: cancellingId === record.id }}
+            onConfirm={() => handleCancel(record.id)}
+          >
+            {/* A disabled-looking <a> still fires onClick, so the trigger is made inert. */}
+            <a style={{ color: busy ? undefined : '#ff4d4f', pointerEvents: busy ? 'none' : undefined }}>
+              Cancel
+            </a>
           </Popconfirm>
-        ) : null,
+        );
+      },
     },
   ];
 

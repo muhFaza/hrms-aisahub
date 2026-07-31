@@ -27,6 +27,10 @@ afterAll(async () => {
 
 const JULY_MONDAY = '2026-07-06';
 const JULY_TUESDAY = '2026-07-07';
+// Cancelling leave is only allowed up to its start date, so the cancel cases need a
+// range that is still ahead of the wall clock this suite runs against.
+const FUTURE_MONDAY = '2027-03-01';
+const FUTURE_TUESDAY = '2027-03-02';
 
 async function draftPeriod(year: number, month: number) {
   return prisma.payrollPeriod.create({
@@ -91,56 +95,41 @@ describe('leave notifications', () => {
     expect(rows[0].recipientId).toBe(activeHr.id);
   });
 
-  it('E1: notifies the requester when the decision is made', async () => {
-    const hr = await createUser({ roleName: 'HR' });
-    const { employee, user } = await createEmployeeWithUser();
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: JULY_MONDAY,
-      endDate: JULY_TUESDAY,
-      totalDays: 2,
-      type: 'SICK',
-    });
+  // There is no LEAVE_DECIDED emitter any more — leave has no approval step. The enum
+  // value and its client copy stay for rows written before that change.
 
-    await leaveService.reviewLeave(request.id, hr.id, { action: 'APPROVE', rejectReason: null });
-
-    const notification = await prisma.notification.findFirstOrThrow({
-      where: { recipientId: user.id },
-    });
-    expect(notification.type).toBe('LEAVE_DECIDED');
-    expect(notification.payload).toMatchObject({ status: 'APPROVED', leaveType: 'SICK' });
-  });
-
-  it('rolls the decision back when the notification write itself fails', async () => {
-    const hr = await createUser({ roleName: 'HR' });
-    const { employee } = await createEmployeeWithUser();
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: JULY_MONDAY,
-      endDate: JULY_TUESDAY,
-      totalDays: 2,
-      type: 'SICK',
-    });
+  it('rolls the submission back when the notification write itself fails', async () => {
+    await createUser({ roleName: 'HR' });
+    const { employee, user } = await createEmployeeWithUser({ joinDate: utc('2026-01-01') });
 
     await withRejectingWrites('Notification', 'false', async () => {
       await expect(
-        leaveService.reviewLeave(request.id, hr.id, { action: 'APPROVE', rejectReason: null }),
+        leaveService.submitLeave(authUser(user), {
+          type: 'PAID',
+          startDate: utc(JULY_MONDAY),
+          endDate: utc(JULY_TUESDAY),
+          reason: null,
+        }),
       ).rejects.toThrow();
     });
 
-    // The decision only exists if its notification does.
-    const after = await prisma.leaveRequest.findUniqueOrThrow({ where: { id: request.id } });
-    expect(after.status).toBe('PENDING');
+    // The leave — and the balance it spends — only exists if its notification does.
+    await expect(prisma.leaveRequest.count()).resolves.toBe(0);
+    const consumed = await prisma.leaveAccrual.aggregate({
+      where: { employeeId: employee.id },
+      _sum: { daysConsumed: true },
+    });
+    expect(Number(consumed._sum.daysConsumed)).toBe(0);
     await expect(prisma.notification.count()).resolves.toBe(0);
   });
 
-  it('H4: announces a cancellation only when HR still had it pending', async () => {
+  it('H4: announces a cancellation only when HR was shown the record', async () => {
     const hr = await createUser({ roleName: 'HR' });
     const { user } = await createEmployeeWithUser({ joinDate: utc('2026-01-01') });
     const created = await leaveService.submitLeave(authUser(user), {
       type: 'SICK',
-      startDate: utc(JULY_MONDAY),
-      endDate: utc(JULY_TUESDAY),
+      startDate: utc(FUTURE_MONDAY),
+      endDate: utc(FUTURE_TUESDAY),
       reason: null,
     });
 
@@ -165,8 +154,8 @@ describe('leave notifications', () => {
     const { employee, user } = await createEmployeeWithUser();
     const request = await createLeaveRequest({
       employeeId: employee.id,
-      startDate: JULY_MONDAY,
-      endDate: JULY_TUESDAY,
+      startDate: FUTURE_MONDAY,
+      endDate: FUTURE_TUESDAY,
       totalDays: 2,
     });
     await createUser({ roleName: 'HR' });

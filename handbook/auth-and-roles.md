@@ -137,10 +137,9 @@ employee profile" is 400, except on list endpoints which return an empty page.
 | List holidays | yes | yes — all rows |
 | Create / update / delete holiday | yes | **403** |
 | **Leave** | | |
-| List leave requests | all; optional employee filter | **own only** — a supplied filter is ignored |
-| Submit leave request | 400, no profile | own, implicitly |
-| Approve / reject | yes | **403** |
-| Cancel a pending request | **any employee's** | own only |
+| List leave records | all; optional employee filter | **own only** — a supplied filter is ignored |
+| Record leave | 400, no profile | own, implicitly |
+| Cancel leave | **any employee's, at any date** | own only, and only up to its start date |
 | Read a leave balance | any, but `?employeeId=` **required** (400 without) | own only; query ignored |
 | Read all balances | yes | **403** |
 | Read leave calendar | company-wide | **company-wide — not scoped** |
@@ -167,13 +166,12 @@ employee profile" is 400, except on list endpoints which return an empty page.
 
 ### Three asymmetries that look like bugs
 
-1. **HR can delete another employee's pending leave request and their daily logs, but
-   cannot cancel their overtime or reimbursement.** Those two services omit the
-   `roleName !== 'HR' &&` prefix, so HR — whose `employeeId` is `null` — fails the equality
-   check and gets 403.
+1. **HR can delete another employee's leave and their daily logs, but cannot cancel their
+   overtime or reimbursement.** Those two services omit the `roleName !== 'HR' &&` prefix,
+   so HR — whose `employeeId` is `null` — fails the equality check and gets 403.
 2. **The leave calendar is the one read endpoint with no scoping at all.** Any authenticated
-   employee sees every approved leave request company-wide, with names. Presumably
-   intentional for a shared team calendar, but you cannot tell that from the route file.
+   employee sees every leave record company-wide, with names. Presumably intentional for a
+   shared team calendar, but you cannot tell that from the route file.
 3. **HR must pass `?employeeId=` to read a single balance**, returning 400 rather than
    defaulting — because HR has no employee profile of their own.
 

@@ -74,14 +74,23 @@ working-day counting. `Holiday.date` is unique, so a duplicate returns 409.
 | --- | --- | --- | --- |
 | GET | `/leave/balance` | any (HR must pass `?employeeId=`) | Accrual breakdown for one employee |
 | GET | `/leave/balances` | HR | One balance row per active full-timer |
-| GET | `/leave/calendar` | any | `?month=YYYY-MM` → approved leave + holidays |
-| GET | `/leave` | any, self-scoped | Paginated requests |
-| POST | `/leave` | any with an employee link | Submit |
-| PATCH | `/leave/:id/review` | HR | Approve or reject |
-| DELETE | `/leave/:id` | owner **or** HR | Cancel a PENDING request |
+| GET | `/leave/calendar` | any | `?month=YYYY-MM` → leave + holidays |
+| GET | `/leave` | any, self-scoped | Paginated records, `?type=` |
+| POST | `/leave` | any with an employee link | Record leave — takes effect immediately |
+| DELETE | `/leave/:id` | owner **or** HR | Cancel, refunding paid days |
+
+There is no review route: leave has no approval step, and no `status` column to filter on.
+`POST` consumes paid-leave balance in the same transaction that writes the row, so it
+returns 400 if the balance cannot cover it.
+
+`DELETE` deletes the row and refunds a PAID record's days, unwinding non-expired accrual
+rows first in FIFO order and expired ones only after. An employee may
+cancel only up to and including the leave's first day (400 afterwards); **HR is exempt from
+that window** and may cancel past-dated leave. Nobody is exempt from the finalized-month
+lock (409).
 
 Non-HR callers are hard-scoped to their own `employeeId`; an `employeeId` query filter from
-an employee is ignored, not honoured. Rejecting requires a reason.
+an employee is ignored, not honoured.
 
 ## `daily-logs`
 

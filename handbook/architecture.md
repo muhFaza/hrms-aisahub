@@ -108,7 +108,7 @@ Notification emission is deliberately **not** here: it reads the HR recipient li
 writes rows, so it lives in `modules/notifications/emit.ts` rather than break the
 database-free rule.
 
-`periodLock` is worth internalising: it is called from leave review/cancel, daily-log
+`periodLock` is worth internalising: it is called from leave cancel, daily-log
 create/update/delete, overtime create/review/cancel and reimbursement
 create/review/cancel. Finalizing a payroll month freezes every record dated in it.
 
@@ -144,9 +144,10 @@ create/review/cancel. Finalizing a payroll month freezes every record dated in i
 - **Notifications are awaited inside the transaction that causes them.** The opposite of
   the fire-and-forget rule the SMTP emails followed, and for the reason that rule existed:
   a notification is an `INSERT` on a connection the request already holds, not a call to a
-  slow external service. Writing it in the same transaction as the state change means an
-  approved leave request can never exist without its notification, and a rolled-back review
-  leaves no orphan. Every `emit*` helper takes the transaction client as its first argument.
+  slow external service. Writing it in the same transaction as the state change means a
+  recorded leave request can never exist without its notification, and a rolled-back
+  submission leaves no orphan. Every `emit*` helper takes the transaction client as its
+  first argument.
 - **Soft delete over hard delete** for employees and users (`isActive`).
 
 ---

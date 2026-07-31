@@ -1,7 +1,8 @@
 # Notifications
 
 In-app only. There is no email anywhere in this system — no SMTP, no nodemailer, no
-`Payslip.emailSentAt`. Everything is delivered through the bell in the app header.
+`Payslip.emailSentAt`. Everything is delivered in-app, reached from a sidebar entry and a
+header bell — see [Delivery](#delivery) for the surfaces.
 
 Email previously covered three events and missed two whole modules, dragged in an SMTP
 dependency, and sent people links that only led back into the app anyway. Moving delivery
@@ -9,27 +10,35 @@ in-app made coverage uniform and removed an external dependency.
 
 ---
 
-## The Core 8
+## The Core 7
 
-Eight events, and deliberately no others.
+Seven emitted events, and deliberately no others.
 
 **HR receives:**
 
 | Type | Trigger | Emitted from |
 | --- | --- | --- |
-| `LEAVE_SUBMITTED` | An employee submits a leave request | `leave/service.ts` → `submitLeave` |
+| `LEAVE_SUBMITTED` | An employee records leave | `leave/service.ts` → `submitLeave` |
 | `OVERTIME_SUBMITTED` | An employee logs overtime | `overtime/service.ts` → `createOvertime` |
 | `REIMBURSEMENT_SUBMITTED` | An employee files a claim | `reimbursements/service.ts` → `createReimbursement` |
-| `REQUEST_CANCELLED` | Any of the three is withdrawn before review | `cancelLeave`, `cancelOvertime`, `cancelReimbursement` |
+| `REQUEST_CANCELLED` | Any of the three is withdrawn | `cancelLeave`, `cancelOvertime`, `cancelReimbursement` |
+
+`LEAVE_SUBMITTED` is informational rather than a queue item: leave takes effect on submit
+and needs no HR action. It keeps its group key all the same, because the cancel path's
+`resolveGroup` / `resolved > 0` gate depends on the group existing.
 
 **The employee receives:**
 
 | Type | Trigger | Emitted from |
 | --- | --- | --- |
-| `LEAVE_DECIDED` | HR approves or rejects the request | `leave/service.ts` → `reviewLeave` |
 | `OVERTIME_DECIDED` | HR approves or rejects the entry | `overtime/service.ts` → `reviewOvertime` |
 | `REIMBURSEMENT_DECIDED` | HR approves or rejects the claim | `reimbursements/service.ts` → `reviewReimbursement` |
 | `PAYSLIP_AVAILABLE` | A payroll period is finalized | `payroll/service.ts` → `finalizePeriod` |
+
+**`LEAVE_DECIDED` has no emitter.** Leave lost its approval step, so nothing writes this
+type any more. The enum value and its entry in `notificationCopy.tsx` are **retained on
+purpose** — production holds rows written before the change and they must keep rendering.
+Do not remove either.
 
 An employee with no user account — a profile-only record — receives nothing. That is not an
 error and is not logged; the row simply has no recipient.
@@ -44,7 +53,7 @@ Every `emit*` helper takes a Prisma transaction client as its **first argument**
 inside `prisma.$transaction` pass `tx`:
 
 ```ts
-await emitToEmployee(tx, decided.employeeId, { type: 'LEAVE_DECIDED', ... });
+await emitToEmployee(tx, decided.employeeId, { type: 'OVERTIME_DECIDED', ... });
 ```
 
 The emails were fire-and-forget because SMTP is slow, external and failure-prone; awaiting
@@ -52,12 +61,15 @@ one would have coupled a request to a third party. A notification has none of th
 properties. It is an `INSERT` on a connection the request already holds, so writing it in
 the same transaction as the state change costs nothing and buys an invariant:
 
-**An approved leave request cannot exist without its notification, and a rolled-back review
-leaves no orphan notification.**
+**A recorded leave request cannot exist without its notification, and a rolled-back
+submission leaves no orphan notification.** For leave that boundary now also guards
+money: `submitLeave` consumes paid-leave balance in the same transaction, so a failed
+notification write unwinds the consumption too.
 
 Two tests in `notifications.emit.test.ts` hold that boundary — one forces the notification
-write itself to fail and asserts the decision rolled back, the other fails a write that
-happens *after* a successful emit and asserts the notification went with it. Both use a
+write itself to fail and asserts the submission and its balance consumption rolled back,
+the other fails a write that happens *after* a successful emit and asserts the
+notification went with it. Both use a
 temporary database `CHECK` constraint rather than mocking, so they keep working regardless
 of how `emit.ts` is written.
 
@@ -85,8 +97,26 @@ groupKey = "<ENTITY>:<id>"        e.g. "LEAVE_REQUEST:42"
 When any HR reviews the record, or it is cancelled, the same transaction calls
 `resolveGroup`, which stamps `resolvedAt` and `resolvedById` on every still-unresolved row
 in that group and marks them read. The badge therefore counts work that is genuinely still
-pending, rather than work a colleague already did an hour ago. The UI dims resolved rows and
-shows "Handled by X".
+pending, rather than work a colleague already did an hour ago. The UI dims resolved rows
+and shows "Handled by X" (`NotificationListItem.tsx:23,43`).
+
+### Leave is the exception: cancellation is its only resolution path
+
+Overtime and reimbursements are resolved by review. **Leave has no review**, so:
+
+- A `LEAVE_SUBMITTED` group is created at submit and **stays unresolved unless the leave is
+  cancelled.** A leave that is simply taken never reaches the resolved state, so its rows
+  never dim and never show "Handled by X".
+- That is invisible in the UI and deliberately accepted. The badge counts `readAt`, not
+  `resolvedAt`, and `resolveGroup` force-marks read — so an unresolved-but-read row is
+  indistinguishable from a resolved one to the person looking at it. Only the dimming and
+  the "Handled by" line differ, and neither is a signal anyone acts on for leave.
+- The group key is kept regardless, and **must not be removed**: the cancel path's
+  `resolveGroup` / `resolved > 0` gate is what decides whether HR is told about the
+  cancellation, and that gate needs the group to exist.
+- Because nothing resolves the group earlier, the gate now effectively means *"was there an
+  active HR account when this leave was recorded?"* rather than *"was HR still sitting on
+  it?"*.
 
 `REQUEST_CANCELLED` fires **only when that resolve actually matched unresolved rows.**
 `resolveGroup` returns the count and the caller checks it:
@@ -115,8 +145,9 @@ dangling `entityId` is harmless.
 
 `recipientId`, by contrast, is the one `User` foreign key in the schema that **cascades**. A
 notification is a delivery record for one person, not audit trail, so it should die with the
-account. It needs no reassignment when a user is deleted — unlike the five `SET NULL`
-attribution columns described in [data-model.md](data-model.md).
+account. It needs no reassignment when a user is deleted — unlike the four `SET NULL`
+attribution columns described in [data-model.md](data-model.md), one of which is
+`Notification.resolvedById`.
 
 ---
 
@@ -128,7 +159,7 @@ API. Adding or rewording a message needs no migration and no server deploy.
 | Type | `payload` |
 | --- | --- |
 | `LEAVE_SUBMITTED` | `{ employeeName, leaveType, startDate, endDate, totalDays }` |
-| `LEAVE_DECIDED` | `{ status, leaveType, startDate, endDate, totalDays, rejectReason }` |
+| `LEAVE_DECIDED` | `{ status, leaveType, startDate, endDate, totalDays, rejectReason }` — historical rows only |
 | `OVERTIME_SUBMITTED` | `{ employeeName, date, hours }` |
 | `OVERTIME_DECIDED` | `{ status, date, hours, rejectReason }` |
 | `REIMBURSEMENT_SUBMITTED` | `{ employeeName, title, amount }` |
@@ -210,10 +241,11 @@ permanently. A route test asserts `?unreadOnly=false` still returns read rows; k
 
 Three further gaps, accepted rather than chosen:
 
-- **HR deleting an employee's pending request tells the employee nothing.** `cancelLeave`
-  lets HR cancel anyone's request and the row is deleted outright. This predates
-  notifications and is not made worse by them, but it is silent data loss from the
-  employee's side. Worth a follow-up.
+- **HR deleting an employee's leave tells the employee nothing.** `cancelLeave` lets HR
+  cancel anyone's record — including past-dated leave, as an override — and the row is
+  deleted outright while the paid-leave balance is refunded. This predates notifications
+  and is not made worse by them, but it is silent data loss from the employee's side.
+  Worth a follow-up.
 - **No retention or cleanup job.** Rows accumulate indefinitely. At this company's volume
   that is years away from mattering.
 - **No per-user preferences.** Everyone gets every event for their role.

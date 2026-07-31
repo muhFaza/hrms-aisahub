@@ -86,10 +86,11 @@ The label on each period tells you where the rate came from: `API` (live), `FALL
 **Working days** — days that count as leave. Weekends and holidays are excluded. Asking for
 Friday through Monday over a normal weekend costs two days of balance, not four.
 
-**Notification** — a message in the app, shown under the bell in the top bar. There is no
-email in this system: when something happens that concerns you, it appears there and
-nowhere else. HR is told when someone submits or withdraws a request; an employee is told
-when a request is decided and when a new payslip is ready.
+**Notification** — a message in the app, reached from the sidebar or the bell in the top
+bar. There is no email in this system: when something happens that concerns you, it appears
+there and nowhere else. HR is told when someone records leave or submits or withdraws a
+request; an employee is told when their overtime or reimbursement is decided and when a new
+payslip is ready. Leave is never "decided", so there is no notification for that.
 
 **Unread** — a notification you have not opened yet. The number on the bell counts these.
 Opening one, or pressing "Mark all read", clears it. Nothing is ever deleted — read
@@ -103,10 +104,11 @@ one to deal with it.
 about the same request.
 
 **Resolved / handled** — what happens to the whole group the moment one HR person acts. If
-three HR accounts were told about a leave request and one approves it, all three
+three HR accounts were told about an overtime entry and one approves it, all three
 notifications are marked handled and stop counting as unread — the other two are not being
 asked to do a job that is already done. The list shows them dimmed, with "Handled by" and
-the name of whoever did it.
+the name of whoever did it. Leave has no approval step, so a leave group is resolved only
+if the leave is cancelled.
 
 **Seed / seeding** — filling an empty database with sample data for demos and testing:
 five accounts, four employees, the 2026 Indonesian holiday calendar, and a handful of
@@ -167,5 +169,5 @@ and discuss them first.
 
 **Lint / linting** — automated style and error checking.
 
-**Test suite** — the automated checks that prove the rules still work. This project has 113
+**Test suite** — the automated checks that prove the rules still work. This project has 142
 of them, all covering the server.

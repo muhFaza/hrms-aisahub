@@ -8,8 +8,8 @@ interface Props {
   onSelect: (notification: AppNotification) => void;
 }
 
-// Shared row for the header drawer and the notifications page: unread rows are
-// emphasized, resolved ones dimmed since another HR already handled them.
+// Row for the notifications page: unread rows are emphasized, resolved ones dimmed
+// since another HR already handled them.
 export default function NotificationListItem({ notification, onSelect }: Props) {
   const copy = getNotificationCopy(notification);
   const unread = notification.readAt === null;

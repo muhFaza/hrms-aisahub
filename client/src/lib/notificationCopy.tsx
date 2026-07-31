@@ -83,12 +83,14 @@ const cancelledLink: Record<string, string> = {
 };
 
 const builders: Record<NotificationType, (payload: Record<string, unknown>) => NotificationCopy> = {
+  // Informational, not a queue item: leave is recorded on submit and needs no HR action.
   LEAVE_SUBMITTED: (payload) => ({
-    title: `${who(payload)} requested leave`,
+    title: `${who(payload)} recorded leave`,
     description: joinParts([text(payload, 'leaveType'), dateRange(payload), dayCount(payload)]),
     link: '/leave',
     icon: <CalendarOutlined />,
   }),
+  // No longer emitted — leave has no approval step. Kept so historical rows still render.
   LEAVE_DECIDED: (payload) => ({
     title: decisionTitle(payload, 'Leave request'),
     description: joinParts([

@@ -28,6 +28,26 @@ function buildAccruals(employeeId: number, joinDate: string): Prisma.LeaveAccrua
   return rows;
 }
 
+// Mirrors the FIFO draw the service performs when paid leave is recorded, so the seeded
+// balance matches the seeded leave: oldest-expiring non-expired rows first (design §4).
+async function consumeAccruals(employeeId: number, days: number): Promise<void> {
+  const accruals = await prisma.leaveAccrual.findMany({
+    where: { employeeId, expiresAt: { gt: new Date() } },
+    orderBy: [{ expiresAt: 'asc' }, { period: 'asc' }],
+  });
+  let remaining = days;
+  for (const accrual of accruals) {
+    if (remaining <= 0) break;
+    const take = Math.min(Number(accrual.days) - Number(accrual.daysConsumed), remaining);
+    if (take <= 0) continue;
+    await prisma.leaveAccrual.update({
+      where: { id: accrual.id },
+      data: { daysConsumed: { increment: take } },
+    });
+    remaining -= take;
+  }
+}
+
 // 2026 Indonesian national holidays + Eid cuti bersama (JOINT_LEAVE).
 // Lunar/movable-feast dates are the official-approximate values used for UAT.
 const holidays: Prisma.HolidayCreateManyInput[] = [
@@ -216,7 +236,8 @@ async function main() {
     },
   });
 
-  // Leave: one approved (SICK — unpaid, no accrual impact), one pending (PAID).
+  // Leave: one SICK (no accrual impact), one PAID. Leave is taken the moment it is
+  // recorded, so the paid one draws its days from the accrual pool below.
   await prisma.leaveRequest.create({
     data: {
       employeeId: budi.id,
@@ -225,9 +246,6 @@ async function main() {
       endDate: d('2026-06-16'),
       totalDays: 2,
       reason: 'Flu',
-      status: 'APPROVED',
-      reviewedById: hrUser.id,
-      reviewedAt: d('2026-06-15'),
     },
   });
   await prisma.leaveRequest.create({
@@ -238,9 +256,9 @@ async function main() {
       endDate: d('2026-07-22'),
       totalDays: 3,
       reason: 'Family vacation',
-      status: 'PENDING',
     },
   });
+  await consumeAccruals(sari.id, 3);
 
   // Pending reimbursement.
   await prisma.reimbursement.create({

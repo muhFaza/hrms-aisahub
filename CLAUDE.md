@@ -39,7 +39,7 @@ pnpm prisma:seed             # DESTRUCTIVE — wipes all tables first
 pnpm --filter server dev     # API with watch
 pnpm --filter client dev     # web app
 pnpm lint:fix                # typecheck + lint, both workspaces
-pnpm test                    # 113 server tests
+pnpm test                    # 142 server tests
 ```
 
 There is no standalone typecheck script — `pnpm build` is the typecheck.
@@ -113,17 +113,25 @@ status code — Zod strips unknown keys silently, so a 200 does not prove a fiel
 
 ## Deleting a User
 
-Never a plain `DELETE`. Five foreign keys are `ON DELETE SET NULL`, so deleting a user
-silently strips the approver from approved leave, overtime and reimbursements, and the
-finalizer from finalized payroll periods — destroying audit trail on a payroll system
-without raising an error.
+Never a plain `DELETE`. Four foreign keys pointing at `User` are `ON DELETE SET NULL`:
 
-Reassign those four columns first. `prisma/migrations/20260730120000_remove_seeded_owner_account`
-is the reference implementation.
+| Column | What silently disappears |
+| --- | --- |
+| `Overtime.reviewedById` | who approved the overtime |
+| `Reimbursement.reviewedById` | who approved the claim |
+| `PayrollPeriod.finalizedById` | who finalized the payroll month |
+| `Notification.resolvedById` | who handled the request behind a notification |
 
-`Notification.recipientId` is the one `User` foreign key that cascades, deliberately: a
+Deleting a user nulls all four without raising an error — audit trail destroyed on a
+payroll system, in silence. Reassign them first.
+`prisma/migrations/20260730120000_remove_seeded_owner_account` is the reference
+implementation; it also reassigns `LeaveRequest.reviewedById`, a column that no longer
+exists now that leave has no approval step.
+
+Deleting a user also **cascade-deletes their whole notification history**:
+`Notification.recipientId` is the one `User` foreign key that cascades, deliberately — a
 notification is a delivery record for one person, not audit trail, so it dies with the
-account and needs no reassignment. (`Notification.resolvedById` is `SET NULL`.)
+account and needs no reassignment.
 
 ## Things that look wrong but are intentional
 

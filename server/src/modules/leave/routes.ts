@@ -8,7 +8,6 @@ import {
   createLeaveSchema,
   idParamSchema,
   listLeaveQuerySchema,
-  reviewLeaveSchema,
 } from './schemas';
 import * as controller from './controller';
 
@@ -30,12 +29,6 @@ leaveRoutes.get(
 
 leaveRoutes.get('/', validate({ query: listLeaveQuerySchema }), asyncHandler(controller.list));
 leaveRoutes.post('/', validate({ body: createLeaveSchema }), asyncHandler(controller.create));
-leaveRoutes.patch(
-  '/:id/review',
-  requireRole('HR'),
-  validate({ params: idParamSchema, body: reviewLeaveSchema }),
-  asyncHandler(controller.review),
-);
 leaveRoutes.delete(
   '/:id',
   validate({ params: idParamSchema }),

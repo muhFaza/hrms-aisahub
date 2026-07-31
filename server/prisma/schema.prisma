@@ -19,6 +19,7 @@ enum LeaveType {
   SICK
 }
 
+// Overtime and Reimbursement only — leave has no approval step.
 enum RequestStatus {
   PENDING
   APPROVED
@@ -39,7 +40,7 @@ enum PayrollStatus {
 
 enum NotificationType {
   LEAVE_SUBMITTED
-  LEAVE_DECIDED
+  LEAVE_DECIDED // retained for historical rows only — leave no longer has an approval step
   OVERTIME_SUBMITTED
   OVERTIME_DECIDED
   REIMBURSEMENT_SUBMITTED
@@ -66,7 +67,6 @@ model User {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  reviewedLeaveRequests   LeaveRequest[]  @relation("LeaveReviewer")
   reviewedOvertime        Overtime[]      @relation("OvertimeReviewer")
   reviewedReimbursements  Reimbursement[] @relation("ReimbursementReviewer")
   finalizedPayrollPeriods PayrollPeriod[] @relation("PayrollFinalizer")
@@ -123,22 +123,18 @@ model LeaveAccrual {
   @@unique([employeeId, period])
 }
 
+// Leave has no approval step: a stored row is leave that is taken, effective on submit.
 model LeaveRequest {
-  id           Int           @id @default(autoincrement())
-  employeeId   Int
-  employee     Employee      @relation(fields: [employeeId], references: [id])
-  type         LeaveType
-  startDate    DateTime
-  endDate      DateTime
-  totalDays    Decimal       @db.Decimal(6, 2) // working days excl. weekends & holidays
-  reason       String?
-  status       RequestStatus @default(PENDING)
-  reviewedById Int?
-  reviewedBy   User?         @relation("LeaveReviewer", fields: [reviewedById], references: [id])
-  reviewedAt   DateTime?
-  rejectReason String?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id         Int       @id @default(autoincrement())
+  employeeId Int
+  employee   Employee  @relation(fields: [employeeId], references: [id])
+  type       LeaveType
+  startDate  DateTime
+  endDate    DateTime
+  totalDays  Decimal   @db.Decimal(6, 2) // working days excl. weekends & holidays
+  reason     String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 }
 
 model Holiday {

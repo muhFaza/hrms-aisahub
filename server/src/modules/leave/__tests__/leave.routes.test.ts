@@ -3,6 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { app } from '../../../app';
 import { prisma } from '../../../config/prisma';
 import {
+  createAccrual,
   createEmployee,
   createEmployeeWithUser,
   createLeaveRequest,
@@ -53,27 +54,7 @@ describe('leave routes — HR-only endpoints', () => {
     expect(Array.isArray(res.body)).toBe(true);
   });
 
-  it('forbids an employee from reviewing a request (403)', async () => {
-    const { employee, user } = await createEmployeeWithUser();
-    const leave = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
-      totalDays: 2,
-      type: 'SICK',
-    });
-
-    const res = await request(app)
-      .patch(`${API}/${leave.id}/review`)
-      .set('Authorization', `Bearer ${signToken(user)}`)
-      .send({ action: 'APPROVE' });
-
-    expect(res.status).toBe(403);
-    const after = await prisma.leaveRequest.findUniqueOrThrow({ where: { id: leave.id } });
-    expect(after.status).toBe('PENDING');
-  });
-
-  it('lets HR review a request', async () => {
+  it('no longer exposes the review route (404)', async () => {
     const hr = await createUser({ roleName: 'HR' });
     const employee = await createEmployee();
     const leave = await createLeaveRequest({
@@ -89,8 +70,36 @@ describe('leave routes — HR-only endpoints', () => {
       .set('Authorization', `Bearer ${signToken(hr)}`)
       .send({ action: 'APPROVE' });
 
+    expect(res.status).toBe(404);
+  });
+
+  it('lets HR cancel past-dated leave, refunding the paid days', async () => {
+    // HR's override: the date window that stops an employee withdrawing leave they
+    // have already taken does not apply to HR.
+    const hr = await createUser({ roleName: 'HR' });
+    const employee = await createEmployee();
+    const accrual = await createAccrual({
+      employeeId: employee.id,
+      period: '2026-01-01',
+      expiresAt: '2027-07-01',
+      days: 2,
+      daysConsumed: 2,
+    });
+    const leave = await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2020-07-06',
+      endDate: '2020-07-07',
+      totalDays: 2,
+    });
+
+    const res = await request(app)
+      .delete(`${API}/${leave.id}`)
+      .set('Authorization', `Bearer ${signToken(hr)}`);
+
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe('APPROVED');
+    await expect(prisma.leaveRequest.findUnique({ where: { id: leave.id } })).resolves.toBeNull();
+    const after = await prisma.leaveAccrual.findUniqueOrThrow({ where: { id: accrual.id } });
+    expect(Number(after.daysConsumed)).toBe(0);
   });
 });
 
@@ -149,6 +158,38 @@ describe('leave routes — record scoping', () => {
   });
 });
 
+describe('leave routes — paid balance', () => {
+  it('consumes the balance the moment leave is submitted', async () => {
+    const { employee, user } = await createEmployeeWithUser();
+    const token = signToken(user);
+
+    const before = await request(app)
+      .get(`${API}/balance`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(before.status).toBe(200);
+
+    // Far enough out that the range is unaffected by weekends near "now".
+    const created = await request(app)
+      .post(API)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ type: 'PAID', startDate: '2027-03-01', endDate: '2027-03-02' });
+    expect(created.status).toBe(201);
+    expect(created.body.totalDays).toBe(2);
+
+    const after = await request(app)
+      .get(`${API}/balance`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(after.body.balance).toBe(before.body.balance - 2);
+    expect(after.body.usedTotal).toBe(before.body.usedTotal + 2);
+
+    const consumed = await prisma.leaveAccrual.aggregate({
+      where: { employeeId: employee.id },
+      _sum: { daysConsumed: true },
+    });
+    expect(Number(consumed._sum.daysConsumed)).toBe(2);
+  });
+});
+
 describe('leave routes — request validation', () => {
   it('rejects an end date before the start date (400)', async () => {
     const { user } = await createEmployeeWithUser();
@@ -159,25 +200,6 @@ describe('leave routes — request validation', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Validation failed');
-  });
-
-  it('requires a reason when rejecting (400)', async () => {
-    const hr = await createUser({ roleName: 'HR' });
-    const employee = await createEmployee();
-    const leave = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
-      totalDays: 2,
-      type: 'SICK',
-    });
-
-    const res = await request(app)
-      .patch(`${API}/${leave.id}/review`)
-      .set('Authorization', `Bearer ${signToken(hr)}`)
-      .send({ action: 'REJECT' });
-
-    expect(res.status).toBe(400);
   });
 
   it('rejects an unknown leave type (400)', async () => {

@@ -11,17 +11,19 @@ for the full design and [`docs/uat-script.md`](docs/uat-script.md) for the accep
 - **Authentication & RBAC** — JWT login, two roles (HR, EMPLOYEE); HR pages return 403 for employees.
 - **Employees** — full profile CRUD with contract file upload, served behind auth.
 - **Holidays** — CRUD plus a color-coded calendar; national/company/joint-leave/special types.
-- **Leave** — 1 day/month accrual with 18-month expiry, FIFO consumption, working-day counting
-  (excludes weekends & holidays), HR approval, and balance/history/calendar views.
+- **Leave** — 1 day/month accrual with 18-month expiry, FIFO consumption at submission,
+  working-day counting (excludes weekends & holidays), no approval step, cancellation with
+  refund, and balance/history/calendar views.
 - **Daily logs** — part-time activity logging (HR can review/edit all).
 - **Overtime** — full-time submission with HR review.
 - **Reimbursements** — submission with evidence upload and HR review.
 - **Payroll** — monthly periods with live FX (USD→IDR) + HR override, per-employee preview
   (full-time salary/overtime/sick; part-time hours × rate), finalize + immutable payslip
   snapshots. Employees view their payslips.
-- **Notifications** — in-app only, delivered through a bell in the header: submissions and
-  cancellations to HR, decisions and new payslips to the employee. HR notifications for one
-  request resolve together the moment anyone acts on it.
+- **Notifications** — in-app only, reached from a sidebar entry and a header bell:
+  submissions and cancellations to HR, overtime/reimbursement decisions and new payslips to
+  the employee. HR notifications for one record resolve together the moment anyone acts on
+  it; leave, having no approval step, resolves only on cancellation.
 - **Dashboards** — role-scoped: HR sees headcount, pending approvals, on-leave-today, upcoming
   holidays and payroll status; employees see their balance/hours, pending items, holidays and
   latest payslip.
@@ -133,9 +135,10 @@ pnpm lint:fix    # eslint --fix across both workspaces
 pnpm test        # runs the server Vitest suite (unit + API smoke tests)
 ```
 
-113 tests across 9 files. They cover the pure logic (working-day counting, leave accrual
+142 tests across 14 files. They cover the pure logic (working-day counting, leave accrual
 balance & FIFO allocation, payroll math for both employment types), the auth and RBAC
-middleware, the leave module at both service and route level, and user-account rules.
+middleware, the leave module at both service and route level, notification emission and
+routes, and user-account rules.
 
 The suite runs against a **separate `hrms_test` database**, created and migrated
 automatically on first run — it never touches development data. `psql` must be on your

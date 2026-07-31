@@ -278,23 +278,9 @@ dependencies. It is meant to run only inside the image build.
 
 ---
 
-## 9. Merging this branch with `main`
+## 9. The test suite in CI
 
-This branch and the containerization work on `main` touched several of the same files, but
-**the merge is clean — git resolves all of them automatically.** Verified by merging
-`origin/main` locally; the result is correct in each case:
-
-| File | Both sides changed it | Merged result |
-| --- | --- | --- |
-| `server/package.json` | `main` moved `prisma` to `dependencies` | Keeps `main`'s `^6.19.3` in `dependencies` — load-bearing, since `pnpm deploy --prod` must include the Prisma CLI for the entrypoint's `migrate deploy` |
-| `server/src/config/env.ts` | `main` added `SERVE_CLIENT`/`CLIENT_DIST`/`UPLOAD_DIR`; this branch removed `ownerEmail` | Both applied |
-| `server/.env.example` | `main` listed `OWNER_EMAIL` | Removed |
-| `README.md` | `main` added Docker sections; this branch corrected the test and role lines | Both applied |
-| `vitest.config.ts` | Only this branch | Test isolation preserved |
-
-The full suite passes on the merged tree (113 tests).
-
-**On the test suite in CI:** the workflow does not install `psql`, which the test setup
+**The workflow does not install `psql`,** which the test setup
 shells out to in order to create the test database. It works because the GitHub runner image
 already ships PostgreSQL client tools — confirmed by a green CI run on this branch — but it
 is an *implicit* dependency. If a future runner image drops them, the failure will point at
@@ -302,3 +288,20 @@ is an *implicit* dependency. If a future runner image drops them, the failure wi
 
 Note also that the CI `DATABASE_URL` carries `?schema=public`, which `psql` rejects outright.
 `globalSetup` strips the query string before shelling out, so that path is already handled.
+
+**`hrms_test` is a single database, not one per checkout.** Two git worktrees on different
+branches share it, and whichever ran its migrations last owns the schema. The other branch's
+suite then fails against columns that no longer exist — the error names the column, not the
+cause, so it reads like a code defect rather than a migration collision.
+
+A green run therefore only means something if this branch's migrations were the last applied.
+Confirm it rather than assume it:
+
+```bash
+psql -d hrms_test -c "SELECT migration_name FROM _prisma_migrations ORDER BY migration_name;"
+pnpm exec prisma migrate diff --from-schema-datamodel prisma/schema.prisma \
+  --to-url "$TEST_DATABASE_URL" --script      # "empty migration" means zero drift
+```
+
+To run two branches concurrently, give each its own `TEST_DATABASE_URL`. `resolveTestDatabaseUrl`
+in `server/src/__tests__/helpers/testDatabase.ts` requires the name to end in `_test`.

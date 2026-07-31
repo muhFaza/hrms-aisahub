@@ -94,13 +94,10 @@ function HrDashboard() {
         <Col xs={24} md={12}>
           <Card title="Pending Approvals" loading={isLoading}>
             <Row gutter={16}>
-              <Col span={8}>
-                <Statistic title="Leave" value={pending?.leave ?? 0} />
-              </Col>
-              <Col span={8}>
+              <Col span={12}>
                 <Statistic title="Overtime" value={pending?.overtime ?? 0} />
               </Col>
-              <Col span={8}>
+              <Col span={12}>
                 <Statistic title="Reimbursements" value={pending?.reimbursements ?? 0} />
               </Col>
             </Row>
@@ -196,13 +193,10 @@ function EmployeeDashboard({ isFullTime }: { isFullTime: boolean }) {
         <Col xs={24} md={12}>
           <Card title="My Pending Requests" loading={isLoading}>
             <Row gutter={16}>
-              <Col span={8}>
-                <Statistic title="Leave" value={pending?.leave ?? 0} />
-              </Col>
-              <Col span={8}>
+              <Col span={12}>
                 <Statistic title="Overtime" value={pending?.overtime ?? 0} />
               </Col>
-              <Col span={8}>
+              <Col span={12}>
                 <Statistic title="Reimbursements" value={pending?.reimbursements ?? 0} />
               </Col>
             </Row>

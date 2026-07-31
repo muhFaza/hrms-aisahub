@@ -18,7 +18,7 @@ export interface UpcomingHoliday {
 
 export interface HrDashboard {
   headcount: { total: number; fullTime: number; partTime: number; active: number };
-  pendingApprovals: { leave: number; overtime: number; reimbursements: number };
+  pendingApprovals: { overtime: number; reimbursements: number };
   onLeaveToday: OnLeaveTodayEntry[];
   upcomingHolidays: UpcomingHoliday[];
   payroll: {
@@ -29,7 +29,7 @@ export interface HrDashboard {
 
 export interface EmployeeDashboard {
   leaveBalance: LeaveBalance | null;
-  pending: { leave: number; overtime: number; reimbursements: number };
+  pending: { overtime: number; reimbursements: number };
   onLeaveToday: OnLeaveTodayEntry[];
   upcomingHolidays: UpcomingHoliday[];
   thisMonth: { dailyLogHours?: number; approvedOvertimeHours?: number };
