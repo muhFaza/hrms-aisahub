@@ -18,6 +18,8 @@ import {
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext';
 import LogoMark from '../components/LogoMark';
+import NotificationBell from '../components/NotificationBell';
+import SidebarNotifications from '../components/SidebarNotifications';
 
 const { Header, Sider, Content } = Layout;
 
@@ -143,6 +145,17 @@ export default function AppLayout() {
             />
           </div>
 
+          {/* Pinned above the user block, deliberately outside the module nav above. */}
+          <div
+            style={{
+              flexShrink: 0,
+              borderTop: '1px solid #E5E7EB',
+              padding: collapsed ? '8px' : '8px 12px',
+            }}
+          >
+            <SidebarNotifications collapsed={collapsed} />
+          </div>
+
           {/* Bottom-pinned user block + explicit logout. */}
           <div
             style={{
@@ -222,6 +235,7 @@ export default function AppLayout() {
             onClick={() => setCollapsed((value) => !value)}
           />
           <Space size={12}>
+            <NotificationBell />
             <Tag color={roleTagColor} style={{ marginInlineEnd: 0 }}>
               {user?.roleName}
             </Tag>

@@ -123,7 +123,7 @@ What it does:
 | **Reimbursements** | Staff claim expenses with a photo of the receipt; HR approves |
 | **Daily logs** | Part-time staff record hours worked, which is how they get paid |
 | **Holidays** | The Indonesian public-holiday calendar, so days off are counted correctly |
-| **Payroll** | Once a month, HR generates everyone's pay, checks it, then finalizes it — which permanently locks that month and emails payslips |
+| **Payroll** | Once a month, HR generates everyone's pay, checks it, then finalizes it — which permanently locks that month and notifies everyone their payslip is ready |
 
 **The most important thing to understand:** finalizing a payroll month is **permanent**.
 There is no undo. It freezes every leave request, overtime claim, expense and daily log

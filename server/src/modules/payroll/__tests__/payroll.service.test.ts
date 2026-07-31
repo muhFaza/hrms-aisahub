@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { prisma } from '../../../config/prisma';
 import {
   createEmployee,
@@ -7,10 +7,6 @@ import {
   resetDb,
 } from '../../../__tests__/helpers/factories';
 import * as payrollService from '../service';
-
-vi.mock('../../../lib/email', () => ({
-  sendPayslipEmail: vi.fn().mockResolvedValue(true),
-}));
 
 // Leave rows carry no status: the gather query must pick a sick record up on its dates
 // alone, or a deduction people are paid on would silently vanish.

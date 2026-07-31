@@ -14,6 +14,7 @@ import { overtimeRoutes } from './modules/overtime/routes';
 import { reimbursementsRoutes } from './modules/reimbursements/routes';
 import { payrollRoutes } from './modules/payroll/routes';
 import { dashboardRoutes } from './modules/dashboard/routes';
+import { notificationsRoutes } from './modules/notifications/routes';
 
 // Express app assembled here (no listen) so it can be imported by both the server
 // entrypoint (index.ts) and the supertest API smoke tests (Phase 6).
@@ -43,6 +44,7 @@ app.use('/api/v1/overtime', authenticate, overtimeRoutes);
 app.use('/api/v1/reimbursements', authenticate, reimbursementsRoutes);
 app.use('/api/v1/payroll', authenticate, payrollRoutes);
 app.use('/api/v1/dashboard', authenticate, dashboardRoutes);
+app.use('/api/v1/notifications', authenticate, notificationsRoutes);
 
 // Container-only (SERVE_CLIENT=true): serve the built SPA from this same origin.
 // Registered after every /api/v1 route so unknown API paths still fall through to

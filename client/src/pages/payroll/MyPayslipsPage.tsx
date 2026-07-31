@@ -1,5 +1,4 @@
-import { Card, Table, Tag, Typography } from 'antd';
-import { CheckCircleOutlined, ClockCircleOutlined } from '@ant-design/icons';
+import { Card, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useMyPayslips, type MyPayslip } from '../../api/payroll';
 import { formatIDR, formatPeriod, formatUSD } from '../../lib/format';
@@ -17,21 +16,6 @@ export default function MyPayslipsPage() {
       render: (v: number) => <strong>{formatIDR(v)}</strong>,
     },
     { title: 'Total USD', dataIndex: 'totalUsd', align: 'right', render: (v: number) => formatUSD(v) },
-    {
-      title: 'Email',
-      dataIndex: 'emailSentAt',
-      width: 140,
-      render: (value: string | null) =>
-        value ? (
-          <Tag icon={<CheckCircleOutlined />} color="green">
-            Sent
-          </Tag>
-        ) : (
-          <Tag icon={<ClockCircleOutlined />} color="default">
-            Not sent
-          </Tag>
-        ),
-    },
   ];
 
   return (

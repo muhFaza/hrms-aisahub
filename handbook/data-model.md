@@ -1,6 +1,6 @@
 # Data model
 
-PostgreSQL via Prisma. 11 models, 5 enums, 6 migrations. Schema at
+PostgreSQL via Prisma. 12 models, 6 enums, 7 migrations. Schema at
 `server/prisma/schema.prisma`; Prisma CLI configuration at `server/prisma.config.ts`.
 
 Every primary key is `Int @id @default(autoincrement())`.
@@ -93,9 +93,24 @@ One payroll run for a year/month.
 The immutable per-employee result, written when a period is finalized. Unique on
 `(payrollPeriodId, employeeId)` — that constraint is what makes finalize idempotent.
 
-`detail` is a JSONB snapshot of the full computation. `emailSentAt` is null until the
-payslip email is successfully dispatched. There is **no `updatedAt`** — the table is
-write-once by design.
+`detail` is a JSONB snapshot of the full computation. There is **no `updatedAt`** — the
+table is write-once by design. (There was an `emailSentAt` column; it went with the email
+system, and employees now learn of a payslip through a `PAYSLIP_AVAILABLE` notification.)
+
+### `Notification`
+One row per recipient per event. `payload` is a JSONB blob whose shape depends on `type` —
+the server stores structured data and the client owns all copy, so adding a field to a
+payload needs no migration.
+
+`entityId` is **deliberately not a foreign key.** Cancelling a request hard-deletes the row,
+and the `REQUEST_CANCELLED` notification has to outlive the record it describes; a foreign
+key would either block the cancel or cascade the notification away. It stays a loose `Int`
+and nothing assumes it still resolves.
+
+`groupKey` (`"<ENTITY>:<id>"`) ties an HR fan-out together so that acting on the record
+resolves every copy at once. It is null on notifications sent to a single employee.
+
+`recipientId` is the one `User` foreign key that **cascades** — see [Relationships](#relationships).
 
 ---
 
@@ -126,12 +141,22 @@ write-once by design.
         Holiday — standalone. No foreign keys.
 ```
 
-Two delete behaviours, and the difference matters:
+`Notification` hangs off `User` twice and is omitted above to keep the diagram legible:
+`recipientId` (**CASCADE**) and `resolvedById` (SET NULL). Its `entityId` points at a leave
+request, overtime, reimbursement or payslip but is *not* a foreign key — see the entity note.
+
+Three delete behaviours, and the difference matters:
 
 - **`RESTRICT`** on every `employeeId` and `payrollPeriodId`. You cannot delete an employee
   who has any accrual, log, request or payslip. This is why employees are deactivated, not
   deleted.
-- **`SET NULL`** on all four nullable user references.
+- **`SET NULL`** on all four nullable user references: `Overtime.reviewedById`,
+  `Reimbursement.reviewedById`, `PayrollPeriod.finalizedById` and
+  `Notification.resolvedById`.
+- **`CASCADE`** on `Notification.recipientId` only. This is the one place cascading is
+  right: a notification is a delivery record for one person, not audit trail, so it should
+  die with the account. It is explicit in `schema.prisma` rather than implicit, and it
+  needs no reassignment when a user is deleted.
 
 ### The `SET NULL` trap
 
@@ -167,7 +192,7 @@ does it automatically, and no `ON DELETE` variant preserves identity.
 
 **`RequestStatus`** — the approval lifecycle for **overtime and reimbursements only**.
 `PENDING` → `APPROVED` or `REJECTED`. Only `APPROVED` rows count toward payroll. Leave used
-this enum until migration 6 removed its approval step; `DailyLog` never had a status.
+this enum until migration 7 removed its approval step; `DailyLog` never had a status.
 
 **`HolidayType`** — why a date is non-working. All four are treated identically by
 leave-day counting; the distinction is classification only.
@@ -199,10 +224,11 @@ Forward-only; Prisma does not generate down migrations.
 | `…090000_phase5_payroll_rate_source` | Schema | Adds `rateSource`, so an operator can tell whether a payslip's rate was live, fallback, or hand-entered. Backfills existing rows to `'API'` |
 | `…100000_leave_accrual_consumption_check` | Constraint | The CHECK on `daysConsumed`. Added because a concurrent-approval race could over-consume an accrual row |
 | `20260730120000_remove_seeded_owner_account` | **Data only** | Removes the retired `owner@aisahub.com` account from already-deployed databases, reassigning its four attribution columns to the oldest remaining active HR user first. Idempotent; degrades gracefully if no successor exists |
+| `20260731072159_in_app_notifications` | Schema | Adds the `Notification` model, the `NotificationType` enum and its three indexes; drops `Payslip.emailSentAt` with the email system |
 | `20260731090000_remove_leave_approval` | Data **and** schema | Drops leave's approval columns. Guards first (aborting if any pending paid request cannot be funded), consumes the pending paid days FIFO so the balance is not left overstated, deletes REJECTED rows — which would otherwise be indistinguishable from taken leave — then drops `status`, `reviewedById`, `reviewedAt`, `rejectReason` and the reviewer FK |
 
 Migrations 2–4 were all corrective — each fixes something the initial schema left
-unguarded. Migration 5 is the only data-only one. **Migration 6 is not reversible**:
+unguarded. Migration 5 is the only data-only one. **Migration 7 is not reversible**:
 dropping `status` destroys the taken/rejected distinction, so the only way back is a
 backup.
 

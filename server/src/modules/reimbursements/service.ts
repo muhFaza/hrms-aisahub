@@ -6,6 +6,7 @@ import { HttpError } from '../../lib/httpError';
 import type { AuthUser } from '../../middleware/auth';
 import { uploadDir } from '../../middleware/upload';
 import { assertPeriodEditable } from '../../lib/periodLock';
+import { emitToEmployee, emitToHr, resolveGroup } from '../notifications/emit';
 import type {
   CreateReimbursementInput,
   ListReimbursementsQuery,
@@ -88,19 +89,37 @@ export async function createReimbursement(
   if (!actor.employeeId) {
     throw new HttpError(400, 'No employee profile is linked to this account');
   }
+  const employeeId = actor.employeeId;
 
   const date = toUtcDate(input.date);
   await assertPeriodEditable(date);
 
-  const created = await prisma.reimbursement.create({
-    data: {
-      employeeId: actor.employeeId,
-      date,
-      amount: input.amount,
-      description: input.description,
-      evidenceFilePath: evidenceFilename,
-    },
-    include: reimbursementInclude,
+  // One transaction: the claim and the HR notifications land together or not at all.
+  const created = await prisma.$transaction(async (tx) => {
+    const reimbursement = await tx.reimbursement.create({
+      data: {
+        employeeId,
+        date,
+        amount: input.amount,
+        description: input.description,
+        evidenceFilePath: evidenceFilename,
+      },
+      include: reimbursementInclude,
+    });
+
+    await emitToHr(tx, {
+      type: 'REIMBURSEMENT_SUBMITTED',
+      entityType: 'REIMBURSEMENT',
+      entityId: reimbursement.id,
+      payload: {
+        employeeName: reimbursement.employee?.fullName ?? null,
+        // The model calls it description; the notification payload calls it title.
+        title: reimbursement.description,
+        amount: Number(reimbursement.amount),
+      },
+    });
+
+    return reimbursement;
   });
   return serializeReimbursement(created);
 }
@@ -119,24 +138,55 @@ export async function reviewReimbursement(
   }
   await assertPeriodEditable(reimbursement.date);
 
-  const updated = await prisma.reimbursement.update({
-    where: { id },
-    data:
-      input.action === 'APPROVE'
-        ? { status: 'APPROVED', reviewedById: reviewerUserId, reviewedAt: new Date() }
-        : {
-            status: 'REJECTED',
-            reviewedById: reviewerUserId,
-            reviewedAt: new Date(),
-            rejectReason: input.rejectReason ?? null,
-          },
-    include: reimbursementInclude,
+  const updated = await prisma.$transaction(async (tx) => {
+    // Conditional transition: `status: 'PENDING'` in the WHERE is what makes two
+    // reviewers racing each other resolve to exactly one winner. See reviewLeave.
+    const claimed = await tx.reimbursement.updateMany({
+      where: { id, status: 'PENDING' },
+      data:
+        input.action === 'APPROVE'
+          ? { status: 'APPROVED', reviewedById: reviewerUserId, reviewedAt: new Date() }
+          : {
+              status: 'REJECTED',
+              reviewedById: reviewerUserId,
+              reviewedAt: new Date(),
+              rejectReason: input.rejectReason ?? null,
+            },
+    });
+    if (claimed.count === 0) {
+      throw new HttpError(409, 'This reimbursement was already reviewed by someone else');
+    }
+
+    const decided = await tx.reimbursement.findUniqueOrThrow({
+      where: { id },
+      include: reimbursementInclude,
+    });
+
+    // The claim is no longer pending, so every HR copy of it stops asking to be acted on.
+    await resolveGroup(tx, 'REIMBURSEMENT', id, reviewerUserId);
+
+    await emitToEmployee(tx, decided.employeeId, {
+      type: 'REIMBURSEMENT_DECIDED',
+      entityType: 'REIMBURSEMENT',
+      entityId: decided.id,
+      payload: {
+        status: decided.status,
+        title: decided.description,
+        amount: Number(decided.amount),
+        rejectReason: decided.rejectReason,
+      },
+    });
+
+    return decided;
   });
   return serializeReimbursement(updated);
 }
 
 export async function cancelReimbursement(id: number, actor: AuthUser) {
-  const reimbursement = await prisma.reimbursement.findUnique({ where: { id } });
+  const reimbursement = await prisma.reimbursement.findUnique({
+    where: { id },
+    include: reimbursementInclude,
+  });
   if (!reimbursement) {
     throw new HttpError(404, 'Reimbursement not found');
   }
@@ -147,7 +197,23 @@ export async function cancelReimbursement(id: number, actor: AuthUser) {
     throw new HttpError(400, 'Only pending reimbursements can be cancelled');
   }
   await assertPeriodEditable(reimbursement.date);
-  await prisma.reimbursement.delete({ where: { id } });
+
+  await prisma.$transaction(async (tx) => {
+    const resolved = await resolveGroup(tx, 'REIMBURSEMENT', id, actor.userId);
+    await tx.reimbursement.delete({ where: { id } });
+
+    // Only worth telling HR about a claim they were actually shown.
+    if (resolved > 0) {
+      await emitToHr(tx, {
+        type: 'REQUEST_CANCELLED',
+        entityType: 'REIMBURSEMENT',
+        entityId: id,
+        payload: { employeeName: reimbursement.employee?.fullName ?? null, kind: 'REIMBURSEMENT' },
+      });
+    }
+  });
+
+  // Only once the row is gone for good — the file is not recoverable.
   unlinkEvidence(reimbursement.evidenceFilePath);
 }
 

@@ -14,7 +14,8 @@ code.
 | [domain-rules.md](domain-rules.md) | The HR policy the code encodes — leave, payroll, overtime, THR |
 | [data-model.md](data-model.md) | Tables, relationships, enums, migrations, seed data |
 | [auth-and-roles.md](auth-and-roles.md) | Who can do what, and how it is enforced |
-| [api-reference.md](api-reference.md) | All 45 endpoints |
+| [notifications.md](notifications.md) | The eight events, why emission is transactional, the bell |
+| [api-reference.md](api-reference.md) | All 49 endpoints |
 | [frontend.md](frontend.md) | Pages, routing, data fetching |
 | [testing.md](testing.md) | Test setup and how to add a test |
 | [operations.md](operations.md) | Setup, environment variables, Docker, CI/CD, deployment |

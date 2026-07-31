@@ -14,13 +14,6 @@ import {
 } from '../../../__tests__/helpers/factories';
 import * as leaveService from '../service';
 
-// Notifications are fire-and-forget; stubbing them keeps the suite off SMTP and
-// lets the tests assert that a submission actually triggers one.
-vi.mock('../../../lib/email', () => ({
-  sendLeaveSubmittedEmail: vi.fn().mockResolvedValue(undefined),
-}));
-const { sendLeaveSubmittedEmail } = await import('../../../lib/email');
-
 // July 2026 calendar used throughout (matches the countWorkingDays suite):
 // 6th=Mon, 8th=Wed, 10th=Fri, 11th=Sat, 12th=Sun, 13th=Mon, 17th=Fri.
 const NOW = new Date('2026-07-15T12:00:00.000Z');
@@ -220,8 +213,10 @@ describe('submitLeave', () => {
   });
 
   it('rolls the consumption back when the submission is rejected for lack of balance', async () => {
-    // The guard and the consumption share one transaction, so a rejected submission
-    // must leave the accrual untouched rather than half-spent.
+    // The guard, the consumption and the HR notification share one transaction, so a
+    // rejected submission must leave the accrual untouched rather than half-spent, and
+    // must not have told HR about leave that was never recorded.
+    await createUser({ roleName: 'HR' });
     const employee = await createEmployee({ joinDate: utc('2026-07-05') });
     const user = await createUser({ roleName: 'EMPLOYEE', employeeId: employee.id });
 
@@ -241,6 +236,7 @@ describe('submitLeave', () => {
     });
     expect(Number(consumed._sum.daysConsumed)).toBe(0);
     await expect(prisma.leaveRequest.count({ where: { employeeId: employee.id } })).resolves.toBe(0);
+    await expect(prisma.notification.count()).resolves.toBe(0);
   });
 
   it('will not draw from an expired accrual', async () => {
@@ -297,14 +293,31 @@ describe('submitLeave', () => {
   });
 
   it('notifies HR that a request was submitted', async () => {
+    const hr = await createUser({ roleName: 'HR' });
     const { user } = await fullTimerWithThreeAccrualDays();
-    await leaveService.submitLeave(authUser(user), {
+    const created = await leaveService.submitLeave(authUser(user), {
       type: 'SICK',
       startDate: utc('2026-07-06'),
       endDate: utc('2026-07-07'),
       reason: 'flu',
     });
-    expect(sendLeaveSubmittedEmail).toHaveBeenCalledOnce();
+
+    const notifications = await prisma.notification.findMany();
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      recipientId: hr.id,
+      type: 'LEAVE_SUBMITTED',
+      entityType: 'LEAVE_REQUEST',
+      entityId: created.id,
+      groupKey: `LEAVE_REQUEST:${created.id}`,
+      readAt: null,
+    });
+    expect(notifications[0].payload).toMatchObject({
+      leaveType: 'SICK',
+      startDate: '2026-07-06',
+      endDate: '2026-07-07',
+      totalDays: 2,
+    });
   });
 });
 
@@ -356,6 +369,34 @@ describe('cancelLeave', () => {
     expect(after.balance).toBe(before.balance);
     expect(after.usedTotal).toBe(0);
     await expect(prisma.leaveRequest.findUnique({ where: { id: created.id } })).resolves.toBeNull();
+  });
+
+  it('refunds the balance and tells HR in the same cancellation', async () => {
+    // The refund and the notification work share one transaction; neither may land alone.
+    const hr = await createUser({ roleName: 'HR' });
+    const { employee, user } = await fullTimerWithThreeAccrualDays();
+    const created = await leaveService.submitLeave(authUser(user), {
+      type: 'PAID',
+      startDate: utc('2026-07-20'),
+      endDate: utc('2026-07-22'),
+      reason: null,
+    });
+
+    await leaveService.cancelLeave(created.id, authUser(user));
+
+    expect((await leaveService.getBalance(employee.id)).balance).toBe(3);
+
+    const submitted = await prisma.notification.findFirstOrThrow({
+      where: { type: 'LEAVE_SUBMITTED' },
+    });
+    expect(submitted.resolvedById).toBe(user.id);
+    expect(submitted.resolvedAt).not.toBeNull();
+
+    const cancelled = await prisma.notification.findFirstOrThrow({
+      where: { type: 'REQUEST_CANCELLED' },
+    });
+    expect(cancelled).toMatchObject({ recipientId: hr.id, entityId: created.id, readAt: null });
+    expect(cancelled.payload).toMatchObject({ kind: 'LEAVE' });
   });
 
   it('refunds the earliest-expiring live row first, not the newest', async () => {

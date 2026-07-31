@@ -10,11 +10,6 @@ Ordered roughly by how much they would matter if the system carried real payroll
 
 ## Security-relevant
 
-**Email templates interpolate user input into HTML without escaping.**
-`server/src/lib/email.ts` builds HTML with template literals containing employee names,
-leave reasons and overtime rejection reasons. An employee could put markup in a leave reason and it
-would render in HR's inbox. Low impact for an internal tool with trusted users; would need
-escaping before any wider deployment.
 
 **Upload extensions are not validated.** `server/src/middleware/upload.ts` sanitizes the
 filename base to `[a-zA-Z0-9-_]` but keeps the client's extension verbatim. The MIME
@@ -75,8 +70,9 @@ does not vary with the actual number of working days in the month.
 ## Data integrity
 
 **Deleting a `User` silently destroys audit attribution.** Four foreign keys are
-`ON DELETE SET NULL`, so a deleted user leaves approved overtime, approved reimbursements
-and finalized payroll periods with timestamps but no actor. See
+`ON DELETE SET NULL`, so a deleted user leaves approved overtime, approved reimbursements,
+finalized payroll periods and resolved notifications with timestamps but no actor. Their
+own notifications cascade away entirely. See
 [data-model.md](data-model.md#the-set-null-trap). The owner-removal migration is the
 reference for doing this correctly.
 

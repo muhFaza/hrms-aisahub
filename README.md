@@ -13,13 +13,16 @@ for the full design and [`docs/uat-script.md`](docs/uat-script.md) for the accep
 - **Holidays** — CRUD plus a color-coded calendar; national/company/joint-leave/special types.
 - **Leave** — 1 day/month accrual with 18-month expiry, FIFO consumption at submission,
   working-day counting (excludes weekends & holidays), no approval step, cancellation with
-  refund, balance/history/calendar, and email notifications.
+  refund, and balance/history/calendar views.
 - **Daily logs** — part-time activity logging (HR can review/edit all).
 - **Overtime** — full-time submission with HR review.
 - **Reimbursements** — submission with evidence upload and HR review.
 - **Payroll** — monthly periods with live FX (USD→IDR) + HR override, per-employee preview
   (full-time salary/overtime/sick; part-time hours × rate), finalize + immutable payslip
-  snapshots, and HTML payslip emails. Employees view their payslips.
+  snapshots. Employees view their payslips.
+- **Notifications** — in-app only, delivered through a bell in the header: submissions and
+  cancellations to HR, decisions and new payslips to the employee. HR notifications for one
+  request resolve together the moment anyone acts on it.
 - **Dashboards** — role-scoped: HR sees headcount, pending approvals, on-leave-today, upcoming
   holidays and payroll status; employees see their balance/hours, pending items, holidays and
   latest payslip.
@@ -39,11 +42,11 @@ for the full design and [`docs/uat-script.md`](docs/uat-script.md) for the accep
 HRMS-Thesis/
 ├── server/                 # Express + TypeScript API (port 5000), Prisma ORM
 │   ├── src/
-│   │   ├── config/         # env, prisma client, mailer
+│   │   ├── config/         # env, prisma client
 │   │   ├── middleware/     # auth (JWT), rbac, validate (zod), errorHandler, upload
-│   │   ├── lib/            # pure logic: workingDays, accrual, payroll, periodLock, fx, email
-│   │   ├── modules/        # auth, users, employees, holidays, leave, daily-logs,
-│   │   │                   #   overtime, reimbursements, payroll, dashboard (routes/controller/service/schemas)
+│   │   ├── lib/            # pure logic: workingDays, accrual, payroll, periodLock, fx
+│   │   ├── modules/        # auth, users, employees, holidays, leave, daily-logs, overtime,
+│   │   │                   #   reimbursements, payroll, dashboard, notifications (routes/controller/service/schemas)
 │   │   ├── app.ts          # Express app (no listen) — imported by index.ts and tests
 │   │   └── index.ts        # server entrypoint (listen + accrual catch-up)
 │   ├── prisma/             # schema.prisma, migrations/, seed.ts
@@ -82,18 +85,8 @@ pnpm workspaces monorepo.
 
    The default `DATABASE_URL` targets `postgresql://postgres:postgres@localhost:5432/hrms`.
 
-   **SMTP (email):** leave-request and payslip emails are sent via Nodemailer. To exercise the
-   email scenarios, set real values in `server/.env`:
-
-   ```
-   SMTP_HOST=smtp.your-provider.com
-   SMTP_PORT=587
-   SMTP_USER=your-smtp-user
-   SMTP_PASS=your-smtp-password
-   SMTP_FROM="HRMS Aisahub <no-reply@aisahub.com>"
-   ```
-
-   Without valid SMTP, the app still works — email sends are logged and skipped (fire-and-forget).
+   There is no mail configuration to do. Notifications are in-app rows written by the API,
+   so nothing needs an SMTP server or an outbound network path.
 
 3. Apply the database schema:
 

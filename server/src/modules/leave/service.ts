@@ -6,7 +6,7 @@ import type { AuthUser } from '../../middleware/auth';
 import { countWorkingDays } from '../../lib/workingDays';
 import { ensureAccrualsUpToDate, getBalanceBreakdown, planFifoAllocation } from '../../lib/accrual';
 import { assertPeriodEditable } from '../../lib/periodLock';
-import { sendLeaveSubmittedEmail } from '../../lib/email';
+import { emitToHr, resolveGroup } from '../notifications/emit';
 import type { CreateLeaveInput, ListLeaveQuery } from './schemas';
 
 const requestInclude = Prisma.validator<Prisma.LeaveRequestInclude>()({
@@ -33,6 +33,11 @@ function serializeRequest(request: RequestRow) {
 // Normalize to UTC midnight so working-day counting and holiday keys line up.
 function toUtcDate(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+// Notification payloads carry calendar days as ISO date strings.
+function isoDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }
 
 export async function listLeave(query: ListLeaveQuery, actor: AuthUser) {
@@ -94,9 +99,9 @@ export async function submitLeave(actor: AuthUser, input: CreateLeaveInput) {
     await ensureAccrualsUpToDate(employee.id);
   }
 
-  // The overlap check, the balance guard, the consumption and the create are one
-  // transaction: leave takes effect on submit, so nothing may come between checking
-  // the balance and spending it.
+  // The overlap check, the balance guard, the consumption, the create and the HR
+  // notification are one transaction: leave takes effect on submit, so nothing may come
+  // between checking the balance and spending it.
   const created = await prisma.$transaction(async (tx) => {
     // Serialize this employee's submissions on their own Employee row. READ COMMITTED lets
     // two concurrent submissions both read "no overlap" and both insert, and there is no
@@ -127,7 +132,7 @@ export async function submitLeave(actor: AuthUser, input: CreateLeaveInput) {
       await consumePaidLeave(tx, employee.id, totalDays);
     }
 
-    return tx.leaveRequest.create({
+    const request = await tx.leaveRequest.create({
       data: {
         employeeId: employee.id,
         type: input.type,
@@ -138,16 +143,21 @@ export async function submitLeave(actor: AuthUser, input: CreateLeaveInput) {
       },
       include: requestInclude,
     });
-  });
 
-  // Fire-and-forget HR notification; failures are caught inside the email helper.
-  void sendLeaveSubmittedEmail({
-    employeeName: employee.fullName,
-    type: created.type,
-    startDate: created.startDate,
-    endDate: created.endDate,
-    totalDays: Number(created.totalDays),
-    reason: created.reason,
+    await emitToHr(tx, {
+      type: 'LEAVE_SUBMITTED',
+      entityType: 'LEAVE_REQUEST',
+      entityId: request.id,
+      payload: {
+        employeeName: employee.fullName,
+        leaveType: request.type,
+        startDate: isoDate(request.startDate),
+        endDate: isoDate(request.endDate),
+        totalDays: Number(request.totalDays),
+      },
+    });
+
+    return request;
   });
 
   return serializeRequest(created);
@@ -252,7 +262,7 @@ async function refundPaidLeave(
 }
 
 export async function cancelLeave(id: number, actor: AuthUser) {
-  const request = await prisma.leaveRequest.findUnique({ where: { id } });
+  const request = await prisma.leaveRequest.findUnique({ where: { id }, include: requestInclude });
   if (!request) {
     throw new HttpError(404, 'Leave request not found');
   }
@@ -270,10 +280,24 @@ export async function cancelLeave(id: number, actor: AuthUser) {
     // Read through the transaction: payroll must not be able to finalize the month
     // between this check and the refund it guards.
     await assertPeriodEditable(request.startDate, tx);
+
+    const resolved = await resolveGroup(tx, 'LEAVE_REQUEST', id, actor.userId);
     if (request.type === 'PAID') {
       await refundPaidLeave(tx, request.employeeId, Number(request.totalDays));
     }
     await tx.leaveRequest.delete({ where: { id } });
+
+    // Only worth telling HR about a record they were actually shown. With no approval
+    // step the submit notification stays unresolved until here, so this fires whenever
+    // an active HR account existed when the leave was recorded.
+    if (resolved > 0) {
+      await emitToHr(tx, {
+        type: 'REQUEST_CANCELLED',
+        entityType: 'LEAVE_REQUEST',
+        entityId: id,
+        payload: { employeeName: request.employee?.fullName ?? null, kind: 'LEAVE' },
+      });
+    }
   });
 }
 
