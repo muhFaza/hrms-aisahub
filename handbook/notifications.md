@@ -155,16 +155,21 @@ Three refresh triggers, all hitting `unread-count`:
 
 1. a 30-second poll while the app is mounted
 2. a refetch on route change
-3. a manual sync button, on both the drawer and the page
+3. a manual sync button, on both the sidebar entry and the page
 
-The drawer and page refetch the full list on open and on manual sync. There is no
-websocket and no push — at this company's volume, polling one cheap indexed count is the
-proportionate answer.
+There is no websocket and no push — at this company's volume, polling one cheap indexed
+count is the proportionate answer.
 
-**Surfaces:** a bell in the `AppLayout` header with an unread badge; an Ant Design `Drawer`
-from the right showing the latest 10, unread emphasized and resolved dimmed; and a
-`/notifications` page with pagination, an unread-only filter and "Mark all read". The page
-is available to both roles.
+**Surfaces.** `/notifications` is the only place notifications are listed: a page with
+pagination, an unread-only filter and "Mark all read", available to both roles. Two things
+link to it, both showing the same unread badge — a bell in the `AppLayout` header, and a
+`SidebarNotifications` entry pinned above the user block in the sidebar. The sidebar entry
+carries a refresh button that invalidates the notification queries, so it works from any
+page rather than only from the notifications page.
+
+There was previously a `Drawer` behind the header bell holding its own copy of the list. It
+was removed once the sidebar gained an entry: three routes to the same content, and two
+unread badges on one screen, read as a bug. The bell is now a link.
 
 Clicking a notification marks it read and navigates to the relevant list page.
 

@@ -142,7 +142,7 @@ The finalize confirmation spells out all three consequences and that it cannot b
 
 **Payslips** — period, IDR total, USD total, with the same expandable breakdown. There is
 no delivery column: a finalized payslip announces itself through a `PAYSLIP_AVAILABLE`
-notification in the bell.
+notification, which shows up on the unread badge and on `/notifications`.
 
 ---
 

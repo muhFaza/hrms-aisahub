@@ -82,6 +82,13 @@ function useNotificationInvalidation() {
   };
 }
 
+// Same invalidation, exposed for the manual sync controls. Invalidating rather than
+// refetching a specific query is what lets the sidebar button work from any page: it
+// refreshes whichever notification queries happen to be mounted, plus the badge.
+export function useRefreshNotifications() {
+  return useNotificationInvalidation();
+}
+
 export function useMarkNotificationRead() {
   const invalidate = useNotificationInvalidation();
   return useMutation({
