@@ -1,7 +1,8 @@
 # Notifications
 
 In-app only. There is no email anywhere in this system — no SMTP, no nodemailer, no
-`Payslip.emailSentAt`. Everything is delivered through the bell in the app header.
+`Payslip.emailSentAt`. Everything is delivered in-app, reached from a sidebar entry and a
+header bell — see [Delivery](#delivery) for the surfaces.
 
 Email previously covered three events and missed two whole modules, dragged in an SMTP
 dependency, and sent people links that only led back into the app anyway. Moving delivery
@@ -95,11 +96,27 @@ groupKey = "<ENTITY>:<id>"        e.g. "LEAVE_REQUEST:42"
 
 When any HR reviews the record, or it is cancelled, the same transaction calls
 `resolveGroup`, which stamps `resolvedAt` and `resolvedById` on every still-unresolved row
-in that group and marks them read. Leave has no review, so a leave group stays unresolved
-until the leave is cancelled — the cancellation notice therefore fires whenever an active
-HR account existed at the moment the leave was recorded. The badge therefore counts work that is genuinely still
-pending, rather than work a colleague already did an hour ago. The UI dims resolved rows and
-shows "Handled by X".
+in that group and marks them read. The badge therefore counts work that is genuinely still
+pending, rather than work a colleague already did an hour ago. The UI dims resolved rows
+and shows "Handled by X" (`NotificationListItem.tsx:23,43`).
+
+### Leave is the exception: cancellation is its only resolution path
+
+Overtime and reimbursements are resolved by review. **Leave has no review**, so:
+
+- A `LEAVE_SUBMITTED` group is created at submit and **stays unresolved unless the leave is
+  cancelled.** A leave that is simply taken never reaches the resolved state, so its rows
+  never dim and never show "Handled by X".
+- That is invisible in the UI and deliberately accepted. The badge counts `readAt`, not
+  `resolvedAt`, and `resolveGroup` force-marks read — so an unresolved-but-read row is
+  indistinguishable from a resolved one to the person looking at it. Only the dimming and
+  the "Handled by" line differ, and neither is a signal anyone acts on for leave.
+- The group key is kept regardless, and **must not be removed**: the cancel path's
+  `resolveGroup` / `resolved > 0` gate is what decides whether HR is told about the
+  cancellation, and that gate needs the group to exist.
+- Because nothing resolves the group earlier, the gate now effectively means *"was there an
+  active HR account when this leave was recorded?"* rather than *"was HR still sitting on
+  it?"*.
 
 `REQUEST_CANCELLED` fires **only when that resolve actually matched unresolved rows.**
 `resolveGroup` returns the count and the caller checks it:

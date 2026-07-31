@@ -1,6 +1,8 @@
 # Testing
 
-**104 tests across 10 files, all server-side.** The client has no test tooling at all.
+**142 tests across 14 files, all server-side.** The client has no test tooling at all —
+no runner, no jsdom, no component tests. `pnpm build` typechecks it and nothing more, so
+untyped literals like the `link` route strings in `notificationCopy.tsx` are unverified.
 
 ```bash
 pnpm --filter server test

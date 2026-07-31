@@ -303,7 +303,8 @@ Other rules:
 ## Notifications
 
 In-app only. There is no email anywhere in the system — no SMTP, no nodemailer, no
-`Payslip.emailSentAt`. Every notification is delivered through the bell in the app header.
+`Payslip.emailSentAt`. Every notification is delivered in-app, reached from a sidebar entry
+and a bell in the header.
 
 Seven events, and no others:
 
