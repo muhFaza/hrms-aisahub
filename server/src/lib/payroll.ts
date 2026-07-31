@@ -37,7 +37,6 @@ export interface ReimbursementRecord {
 export interface SickLeaveRecord {
   id: number;
   type: string;
-  status: string;
   startDate: Date;
   endDate: Date;
 }
@@ -99,8 +98,8 @@ function holidayKeys(holidays: Date[]): Set<string> {
   return new Set(holidays.map((h) => h.toISOString().slice(0, 10)));
 }
 
-// APPROVED SICK working-days clipped to the period month (a request can span months —
-// only the in-period days deduct). Weekends and holidays are excluded (design §4).
+// SICK working-days clipped to the period month (a request can span months — only the
+// in-period days deduct). Weekends and holidays are excluded (design §4).
 function sickDaysInPeriod(
   sickLeaves: SickLeaveRecord[],
   holidays: Set<string>,
@@ -112,7 +111,7 @@ function sickDaysInPeriod(
   let days = 0;
   const ids: number[] = [];
   for (const leave of sickLeaves) {
-    if (leave.status !== 'APPROVED' || leave.type !== 'SICK') continue;
+    if (leave.type !== 'SICK') continue;
     const start = leave.startDate > periodStart ? leave.startDate : periodStart;
     const end = leave.endDate < periodEnd ? leave.endDate : periodEnd;
     if (start > end) continue;

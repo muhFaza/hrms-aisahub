@@ -100,7 +100,6 @@ describe('computePayslipRow — full-time', () => {
           {
             id: 7,
             type: 'SICK',
-            status: 'APPROVED',
             startDate: d('2026-06-29'),
             endDate: d('2026-07-02'),
           },

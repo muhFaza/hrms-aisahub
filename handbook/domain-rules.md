@@ -54,7 +54,7 @@ only the **unused remainder** of expired rows.
 
 ### FIFO consumption
 
-When paid leave is approved, days are drawn **oldest-expiring first** — ordered by
+When paid leave is **submitted**, days are drawn **oldest-expiring first** — ordered by
 `expiresAt`, not by row id and not by `period`. That distinction is deliberate and
 explicitly tested.
 
@@ -62,12 +62,30 @@ Rows already fully consumed are skipped. Fractional draws are supported. Expired
 excluded from the query entirely, so **expired days are unreachable — they cannot be
 spent, and there is no way to reclaim them.**
 
-If the available rows cannot cover the request, approval fails with
-*"Insufficient leave balance to approve this request"* and the request stays PENDING.
+If the available rows cannot cover the request, submission is rejected with
+*"Insufficient leave balance: requested N day(s) but only M available"* and nothing is
+written. The balance check and the consumption run in **one transaction**, so a rejected
+submission can never leave the accrual half-spent.
 
 **Concurrency:** each decrement is a conditional update guarded on the row not having been
 spent underneath it. A lost race returns 409 *"Leave balance changed, please retry"*. A
 database CHECK constraint is the final backstop.
+
+### Refund on cancellation
+
+Cancelling PAID leave gives the days back, **non-expired rows first in FIFO order**
+(`expiresAt` ASC, `period` ASC), **then expired rows** in the same order. The refund runs in
+the same transaction as the delete. SICK leave refunds nothing, because it consumed nothing.
+
+Nothing records which accrual rows a given leave drew from, so this is a reconstruction, not
+a replay. It is ordered this way because it never moves a day from a soon-expiring row to a
+longer-lived one — refunding newest-first would do exactly that whenever a later leave had
+spilled over, manufacturing spendable future balance.
+
+Expired rows can still receive a refund, but only once every live row has been refunded. If
+an accrual expired between the leave being taken and cancelled, days landing there can no
+longer be spent and are lost. That is deliberate: crediting a live row instead would
+silently extend an expiry date. See [known-issues.md](known-issues.md).
 
 ### Counting days
 
@@ -77,38 +95,37 @@ Saturdays, Sundays, and any date in the `Holiday` table. All arithmetic is UTC.
 A holiday that falls on a weekend does not subtract twice. A range containing zero working
 days is rejected.
 
-### The request lifecycle
+### The lifecycle
+
+**There is no approval step.** A leave request is not a request; it is a record of leave
+that is taken, effective the moment it is submitted. There is no `status` column.
 
 ```
-           submit            HR review
-  (none) ──────────► PENDING ──────────► APPROVED   (terminal)
-                        │      └───────► REJECTED   (terminal)
-                        │
-                        └─ cancel (owner or HR) ──► row deleted
+           submit (consumes paid balance)
+  (none) ──────────────────────────────► recorded
+                                             │
+                                             └─ cancel (refunds) ──► row deleted
 ```
 
-- **Only PENDING can be reviewed or cancelled.** Approved and rejected are absolutely
-  terminal — there is no un-approve, no un-reject, no re-open.
-- Cancelling **deletes the row**; it is not a status change.
-- Approval is transactional: if the balance check fails, the request stays PENDING rather
-  than ending up approved-but-unfunded.
-- Rejecting requires a reason.
-- Review is blocked if the request's **start month** is in a finalized payroll period.
-
-Because only PENDING is cancellable and PENDING never consumes balance, **no
-accrual-restore path exists anywhere in the codebase** — and none is needed for the paths
-that exist. The consequence: **a paid leave approved in error permanently burns the
-balance, with no administrative remedy.**
+- Cancelling **deletes the row**; there is no cancelled state to read back.
+- An employee may cancel only **up to and including the leave's first day**. Once the start
+  date has passed the leave is taken, and the attempt is rejected with 400.
+- **HR is exempt from that date window** and may cancel past-dated leave as an override
+  correction.
+- **HR is not exempt from the payroll month lock.** Cancelling is blocked for everyone if
+  the leave's **start month** is in a finalized payroll period — payslips are already out.
+- The human coordination approval used to force now lives in the client: submitting opens a
+  confirmation step reminding the employee to clear the dates with their team and project
+  manager first. It is a nudge, not an audit trail; nothing about it is stored.
 
 ### Overlap and reservation
 
-A new request is rejected if it overlaps any existing PENDING or APPROVED request for the
-same employee. Rejected requests are ignored, and the check spans both types — a paid and a
-sick request cannot cover the same dates.
+A new request is rejected if it overlaps **any** existing leave record for the same
+employee. The check spans both types — a paid and a sick record cannot cover the same dates.
 
-**Balance is checked at submission but not reserved.** `daysConsumed` stays at zero until
-approval. Two non-overlapping pending requests can each pass the submit check and together
-exceed the balance; the second approval then fails.
+**Balance is consumed at submission, not merely checked.** The overlap check, the balance
+check, the FIFO consumption and the insert are one transaction, so two concurrent
+submissions cannot both spend the same day.
 
 ### Visibility
 
@@ -119,8 +136,9 @@ who is off.
 
 ### Email
 
-On submission, every active HR account is notified. On decision, the employee is notified,
-silently skipped if there is no address on file. Both are fire-and-forget.
+On submission, every active HR account is notified — fire-and-forget. With no approval
+queue, that email is HR's only signal that leave was taken. There is no decision email,
+because there is no decision.
 
 ---
 
@@ -146,10 +164,10 @@ fire-and-forget, stamping `emailSentAt` only on success.
 Finalizing a period locks that calendar month. Any create, update, delete or review of a
 dated record in it returns `409 Payroll period YYYY-MM is finalized`. This covers overtime
 (create/review/cancel), reimbursements (create/review/cancel), daily logs
-(create/update/delete) and leave (review/cancel).
+(create/update/delete) and leave (cancel).
 
-**Leave *submission* is not covered** — an employee can file a request dated inside a
-closed month. It simply can never be reviewed.
+**Leave *submission* is not covered** — an employee can record leave dated inside a closed
+month, and it will not be reflected in the payslips already issued for it.
 
 ### Who gets a payslip
 
@@ -177,7 +195,7 @@ Rounding is applied per component before summing: IDR to whole rupiah, USD to tw
 | `derivedHourly` | `monthlySalary / 21 / 8` | — |
 | `dailyRate` | `monthlySalary / 21` | — |
 | `overtimePay` | Σ approved OT hours × `derivedHourly` | Always 0 |
-| `leaveDeduction` | Approved sick working days × `dailyRate` | Always 0 |
+| `leaveDeduction` | Sick working days × `dailyRate` | Always 0 |
 | `reimbursementTotal` | Σ approved, in-period | Same |
 
 The **21** is a hardcoded assumed working-day month. It does not vary with the actual number
@@ -216,8 +234,9 @@ stated rule anywhere in the project.
 - 0.5–12 hours in half-hour steps; description required.
 - At most one PENDING-or-APPROVED entry per employee per date. A rejected entry frees the
   date up again.
-- Same lifecycle as leave: PENDING → APPROVED or REJECTED, HR review only, reason required
-  on reject, cancel is a hard delete of a PENDING row.
+- PENDING → APPROVED or REJECTED, HR review only, reason required on reject, cancel is a
+  hard delete of a PENDING row. **Leave no longer works this way** — overtime and
+  reimbursements are the only records still reviewed.
 - **Cancel is owner-only — HR cannot cancel someone else's overtime**, unlike leave.
 - Reaches payroll as approved, in-period entries.
 
@@ -228,7 +247,7 @@ stated rule anywhere in the project.
 - Any employee, either employment type.
 - Amount in IDR, must be positive.
 - **An evidence file is mandatory at creation.** PDF, JPEG or PNG, 5 MB cap.
-- Same PENDING → APPROVED/REJECTED lifecycle, HR review, reason required on reject.
+- PENDING → APPROVED/REJECTED lifecycle, HR review, reason required on reject.
 - Cancel is owner-only, PENDING-only, and unlinks the file from disk.
 - Evidence download is restricted to HR or the owner, and the stored filename is
   `basename`d to block path traversal.
@@ -241,8 +260,8 @@ stated rule anywhere in the project.
 The mirror image of overtime.
 
 - **Part-time only.** Full-timers get 403.
-- **No approval workflow at all** — there is no status column. A log counts toward pay the
-  moment it is written.
+- **No approval workflow at all** — there is no status column, the same as leave. A log
+  counts toward pay the moment it is written.
 - Exactly one log per employee per date, enforced by both a pre-check and a unique index.
 - 0.5–24 hours in half-hour steps; project required, notes optional.
 - Editable and deletable by the owner **or** HR. Moving a log to a different date re-checks
@@ -290,7 +309,7 @@ not gate payslip generation, leave eligibility, or probation.
 expired contract has no effect on anything.
 
 **There is no hard delete.** Deactivating an employee stops accrual, drops them from the
-balances list and from payroll — but does **not** cascade-cancel their pending requests.
+balances list and from payroll — but does **not** remove their future-dated leave.
 
 An authenticated account with no linked employee degrades gracefully: empty lists rather
 than errors, and a 400 on submission attempts.
@@ -304,16 +323,18 @@ Full-timer, joined 2025-01-15, active. Today is 2026-07-30.
 1. Accrual catch-up runs from 2025-01 through 2026-07 inclusive → **19 rows**, 1 day each.
 2. Each expires 18 months after its period: the 2025-01 row expires 2026-07-01, the 2025-02
    row 2026-08-01, and so on.
-3. Say 4 days were approved earlier. FIFO took them from the four oldest-expiring rows:
+3. Say 4 days were taken earlier. FIFO took them from the four oldest-expiring rows:
    2025-01 through 2025-04, each now fully consumed.
 4. Today: `accruedTotal = 19`, `usedTotal = 4`. The 2025-01 row **has** expired, but its
    remaining is 0, so `expiredTotal = 0`. **Balance = 15.** Identity holds: 19 = 4 + 0 + 15.
-5. A new paid request for Mon 2026-08-03 → Fri 2026-08-07, no holidays, counts as **5**
-   working days. 15 ≥ 5, so it is accepted as PENDING. Nothing is reserved.
-6. On approval, consumption loads only unexpired rows — 2025-01 is excluded entirely — in
-   expiry order. 2025-02 through 2025-04 are already empty and are skipped. One day each
-   comes from 2025-05, 06, 07, 08 and 09.
+5. New paid leave for Mon 2026-08-03 → Fri 2026-08-07, no holidays, counts as **5** working
+   days. 15 ≥ 5, so it is accepted — and consumed there and then, in the same transaction.
+6. Consumption loads only unexpired rows — 2025-01 is excluded entirely — in expiry order.
+   2025-02 through 2025-04 are already empty and are skipped. One day each comes from
+   2025-05, 06, 07, 08 and 09.
 7. Result: `accruedTotal = 19`, `usedTotal = 9`, **balance = 10**.
+8. Cancelling that leave on 2026-08-01 refunds in reverse: 2025-09, 08, 07, 06 and 05 each
+   get their day back, and the balance returns to 15.
 
 **The counter-case matters more.** Had those 4 days never been taken, the 2025-01 row's
 unused day would have hit its expiry on 2026-07-01 and moved to `expiredTotal`, giving a
@@ -325,7 +346,7 @@ balance of 18 out of 19 accrued. Silently lost, with no way to reclaim it.
 
 Budi, full-time, Rp 10,000,000/month. Period 2026-07, rate 16,000 (`FALLBACK`).
 Source rows: 3h approved overtime on 2026-07-10; an approved Rp 200,000 reimbursement on
-2026-07-01; approved sick leave spanning 2026-06-29 → 2026-07-02.
+2026-07-01; sick leave spanning 2026-06-29 → 2026-07-02.
 
 | Step | Value |
 | --- | --- |
@@ -349,10 +370,8 @@ against a separate June period.
 The design document is `docs/plans/2026-07-08-hrms-design.md`. These are recorded so nobody
 "fixes" the code to match a stale document, or vice versa, without deciding which is right.
 
-1. **Accrual restore on rejection/cancellation** is described in the design and does not
-   exist in code. It is also *unreachable* — reject and cancel are PENDING-only, and PENDING
-   never consumes. The sentence is vacuous. But the same fact means an approved-in-error
-   paid leave permanently burns the balance.
+1. **Accrual restore on cancellation** now exists, unwinding live rows in FIFO order. The design's other half
+   — restore on *rejection* — is moot: there is no rejection any more.
 
 2. **The Owner account is gone.** The design still references `OWNER_EMAIL` and "HR + Owner"
    notification. There is no such config, the mailer notifies active HR accounts, and a
@@ -363,7 +382,7 @@ The design document is `docs/plans/2026-07-08-hrms-design.md`. These are recorde
    comment. The tests pin the current behaviour.
 
 4. **Part-time sick leave has no payroll consequence**, though the design says sick is
-   unpaid and deducts. A part-timer can have sick leave approved, but the part-time branch
+   unpaid and deducts. A part-timer can record sick leave, but the part-time branch
    hardcodes zero sick days. In practice a part-timer is already unpaid for unlogged days,
    so the outcome is right by accident — the stated rule and the code still disagree.
 
@@ -373,9 +392,10 @@ The design document is `docs/plans/2026-07-08-hrms-design.md`. These are recorde
 6. **Leave submission bypasses the finalized-period lock**, unlike overtime, reimbursements
    and daily logs which all check it on create.
 
-7. **The period lock only inspects a leave request's `startDate`.** A request spanning a
-   closed month into an open one is judged solely by where it starts — so it can be approved
-   into a closed period, or blocked despite lying mostly in an open one.
+7. **The period lock only inspects a leave record's `startDate`.** Leave spanning a closed
+   month into an open one is judged solely by where it starts — so cancelling it can be
+   blocked despite it lying mostly in an open month, or allowed despite most of it lying in
+   a closed one.
 
 8. **No proration rule exists for payroll**, in the code or the design. An employee hired in
    August, if active when a July period is finalized, receives a full July salary.

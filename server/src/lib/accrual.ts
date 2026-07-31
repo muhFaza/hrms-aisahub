@@ -172,7 +172,7 @@ export async function getBalanceBreakdown(employeeId: number): Promise<BalanceBr
   const { balance, accruedTotal, usedTotal, expiredTotal } = computeBalance(rows, now);
 
   const sick = await prisma.leaveRequest.aggregate({
-    where: { employeeId, type: 'SICK', status: 'APPROVED' },
+    where: { employeeId, type: 'SICK' },
     _sum: { totalDays: true },
   });
 

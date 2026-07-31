@@ -3,7 +3,6 @@ import { apiClient } from './client';
 import type { Holiday } from './holidays';
 
 export type LeaveType = 'PAID' | 'SICK';
-export type LeaveStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 
 // Decimal totalDays is serialized as a number by the leave service.
 export interface LeaveRequest {
@@ -16,15 +15,10 @@ export interface LeaveRequest {
   endDate: string;
   totalDays: number;
   reason: string | null;
-  status: LeaveStatus;
-  reviewedById: number | null;
-  reviewedAt: string | null;
-  rejectReason: string | null;
   createdAt: string;
 }
 
 export interface LeaveListParams {
-  status?: LeaveStatus;
   type?: LeaveType;
   employeeId?: number;
   page?: number;
@@ -88,11 +82,6 @@ export interface SubmitLeavePayload {
   startDate: string;
   endDate: string;
   reason?: string | null;
-}
-
-export interface ReviewLeavePayload {
-  action: 'APPROVE' | 'REJECT';
-  rejectReason?: string | null;
 }
 
 export function useLeaveRequests(params: LeaveListParams) {
@@ -161,17 +150,6 @@ export function useSubmitLeave() {
   });
 }
 
-export function useReviewLeave() {
-  const invalidate = useLeaveInvalidation();
-  return useMutation({
-    mutationFn: async ({ id, payload }: { id: number; payload: ReviewLeavePayload }) => {
-      const { data } = await apiClient.patch<LeaveRequest>(`/leave/${id}/review`, payload);
-      return data;
-    },
-    onSuccess: invalidate,
-  });
-}
-
 export function useCancelLeave() {
   const invalidate = useLeaveInvalidation();
   return useMutation({
@@ -187,8 +165,7 @@ export const leaveTypeColor: Record<LeaveType, string> = {
   SICK: 'orange',
 };
 
-export const leaveStatusColor: Record<LeaveStatus, string> = {
-  PENDING: 'gold',
-  APPROVED: 'green',
-  REJECTED: 'red',
+export const leaveTypeLabel: Record<LeaveType, string> = {
+  PAID: 'Paid Leave',
+  SICK: 'Sick Leave',
 };

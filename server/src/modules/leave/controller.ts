@@ -40,11 +40,6 @@ export async function create(req: Request, res: Response): Promise<void> {
   res.status(201).json(created);
 }
 
-export async function review(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
-  res.json(await leaveService.reviewLeave(id, req.user!.userId, req.body));
-}
-
 export async function remove(req: Request, res: Response): Promise<void> {
   const id = Number(req.params.id);
   await leaveService.cancelLeave(id, req.user!);

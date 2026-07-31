@@ -12,7 +12,7 @@ Ordered roughly by how much they would matter if the system carried real payroll
 
 **Email templates interpolate user input into HTML without escaping.**
 `server/src/lib/email.ts` builds HTML with template literals containing employee names,
-leave reasons and rejection reasons. An employee could put markup in a leave reason and it
+leave reasons and overtime rejection reasons. An employee could put markup in a leave reason and it
 would render in HR's inbox. Low impact for an internal tool with trusted users; would need
 escaping before any wider deployment.
 
@@ -38,7 +38,7 @@ Appropriate to revisit if this ever holds real personnel data.
 ## Correctness
 
 **Dashboard numbers are stale.** Nothing anywhere invalidates the `['dashboard', …]` query
-keys. Approve a leave request and the HR dashboard's pending count does not move until a
+keys. Approve an overtime claim and the HR dashboard's pending count does not move until a
 page reload or a window-focus refetch. Most visible bug in the app.
 
 **`['my-payslips']` is not invalidated by finalize.** An employee with the payslips page
@@ -55,9 +55,10 @@ where `req.query` is a getter. Worth knowing before anyone attempts that upgrade
 
 ## Inconsistencies that read like drift
 
-**HR can cancel someone's leave request but not their overtime or reimbursement.**
-`leave/service.ts` allows an HR bypass on cancel; `overtime/service.ts` and
-`reimbursements/service.ts` check `employeeId !== actor.employeeId` with no such bypass.
+**HR can cancel someone's leave but not their overtime or reimbursement.**
+`leave/service.ts` allows an HR bypass on cancel — including past the date window an
+employee is held to; `overtime/service.ts` and `reimbursements/service.ts` check
+`employeeId !== actor.employeeId` with no such bypass.
 This may be intentional, but the three flows are otherwise symmetrical, so it reads like
 an oversight.
 
@@ -73,9 +74,9 @@ does not vary with the actual number of working days in the month.
 
 ## Data integrity
 
-**Deleting a `User` silently destroys audit attribution.** Five foreign keys are
-`ON DELETE SET NULL`, so a deleted user leaves approved leave, approved overtime, approved
-reimbursements and finalized payroll periods with timestamps but no actor. See
+**Deleting a `User` silently destroys audit attribution.** Four foreign keys are
+`ON DELETE SET NULL`, so a deleted user leaves approved overtime, approved reimbursements
+and finalized payroll periods with timestamps but no actor. See
 [data-model.md](data-model.md#the-set-null-trap). The owner-removal migration is the
 reference for doing this correctly.
 
@@ -104,9 +105,9 @@ tables. The container entrypoints guard it with an emptiness check; the bare
 **Seeded accruals stop at a hardcoded 2026-07.** Run the seed in 2027 and every full-timer's
 leave balance will be short by the intervening months.
 
-**The FIFO consumption path is untested by seed data.** The one seeded approved leave
-request is `SICK`, which does not consume accruals, so no seeded accrual row has
-`daysConsumed > 0`. The automated test suite does cover this properly.
+**Seeded accrual consumption is written by hand.** The seed inserts leave rows directly
+rather than going through `submitLeave`, so it mirrors the FIFO draw itself for the one
+seeded `PAID` record. If the consumption rule changes, that mirror has to change with it.
 
 **`COMPANY` and `SPECIAL` holiday types have no seeded example.**
 
@@ -133,12 +134,21 @@ These are behaviours rather than defects, but each one could produce a wrong num
 stuck record. Full detail and citations in
 [domain-rules.md](domain-rules.md#where-the-code-and-the-design-document-disagree).
 
-- **An approved-in-error paid leave permanently burns the balance.** Approval is terminal,
-  and no accrual-restore path exists anywhere in the codebase.
-- **Leave submission is the one mutation that does not check the payroll lock.** A request
-  can be filed into a closed month; it can then never be reviewed.
-- **The payroll lock only inspects a leave request's start date.** A request spanning a
-  closed month into an open one is judged solely by where it starts.
+- **A cancellation can refund days to a row that has already expired.** Nothing records
+  which accrual rows a given leave drew from, so the refund is a reconstruction: it unwinds
+  non-expired rows first in FIFO order, then expired ones. Days that land on an expired row
+  are unspendable and lost. This is accepted, not a defect — crediting a live row instead
+  would silently extend an expiry date and manufacture balance, which is worse on a payroll
+  system. Live rows are exhausted first, so an expired row only ever absorbs a remainder,
+  and the cancel-before-start window keeps that rare: it needs leave booked far enough ahead
+  that an accrual expires before the leave begins.
+- **Leave taken in error is only recoverable by HR.** An employee cannot withdraw leave once
+  its start date has passed; HR can, and the days are refunded. Inside a finalized payroll
+  month nobody can, so a mistake there needs a manual correction outside the app.
+- **Leave submission is the one mutation that does not check the payroll lock.** Leave can
+  be recorded into a closed month, where it will not affect the payslips already issued.
+- **The payroll lock only inspects a leave record's start date.** Leave spanning a closed
+  month into an open one is judged solely by where it starts.
 - **Payroll has no proration.** Every active employee gets a full month's salary regardless
   of join date or contract end.
 - **Unused accrual days expire silently** and cannot be reclaimed.

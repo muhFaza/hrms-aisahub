@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import type { EmploymentType, LeaveType, RequestStatus } from '@prisma/client';
+import type { EmploymentType, LeaveType } from '@prisma/client';
 import { prisma } from '../../config/prisma';
 import { env } from '../../config/env';
 import type { AuthUser } from '../../middleware/auth';
@@ -150,10 +150,11 @@ export interface LeaveRequestOptions {
   endDate: string;
   totalDays: number;
   type?: LeaveType;
-  status?: RequestStatus;
   reason?: string | null;
 }
 
+// A leave row is taken leave; it carries no status. Note this writes the row directly —
+// it does not consume accrual the way submitLeave does.
 export async function createLeaveRequest(options: LeaveRequestOptions) {
   return prisma.leaveRequest.create({
     data: {
@@ -162,7 +163,6 @@ export async function createLeaveRequest(options: LeaveRequestOptions) {
       startDate: utc(options.startDate),
       endDate: utc(options.endDate),
       totalDays: options.totalDays,
-      status: options.status ?? 'PENDING',
       reason: options.reason ?? null,
     },
   });

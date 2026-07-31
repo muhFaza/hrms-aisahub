@@ -11,8 +11,9 @@ for the full design and [`docs/uat-script.md`](docs/uat-script.md) for the accep
 - **Authentication & RBAC** — JWT login, two roles (HR, EMPLOYEE); HR pages return 403 for employees.
 - **Employees** — full profile CRUD with contract file upload, served behind auth.
 - **Holidays** — CRUD plus a color-coded calendar; national/company/joint-leave/special types.
-- **Leave** — 1 day/month accrual with 18-month expiry, FIFO consumption, working-day counting
-  (excludes weekends & holidays), HR approval, balance/history/calendar, and email notifications.
+- **Leave** — 1 day/month accrual with 18-month expiry, FIFO consumption at submission,
+  working-day counting (excludes weekends & holidays), no approval step, cancellation with
+  refund, balance/history/calendar, and email notifications.
 - **Daily logs** — part-time activity logging (HR can review/edit all).
 - **Overtime** — full-time submission with HR review.
 - **Reimbursements** — submission with evidence upload and HR review.

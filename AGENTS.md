@@ -118,7 +118,7 @@ What it does:
 | Area | In plain terms |
 | --- | --- |
 | **Employees** | Personal details, contracts, salary, bank details |
-| **Leave** | Staff request time off; HR approves. Paid leave is earned a day at a time and expires after 18 months |
+| **Leave** | Staff record time off, which takes effect immediately — there is no HR approval. Paid leave is earned a day at a time and expires after 18 months |
 | **Overtime** | Full-time staff claim extra hours; HR approves; it flows into their pay |
 | **Reimbursements** | Staff claim expenses with a photo of the receipt; HR approves |
 | **Daily logs** | Part-time staff record hours worked, which is how they get paid |

@@ -15,12 +15,11 @@ import {
 import * as leaveService from '../service';
 
 // Notifications are fire-and-forget; stubbing them keeps the suite off SMTP and
-// lets the tests assert that a decision actually triggers one.
+// lets the tests assert that a submission actually triggers one.
 vi.mock('../../../lib/email', () => ({
   sendLeaveSubmittedEmail: vi.fn().mockResolvedValue(undefined),
-  sendLeaveDecisionEmail: vi.fn().mockResolvedValue(undefined),
 }));
-const { sendLeaveDecisionEmail, sendLeaveSubmittedEmail } = await import('../../../lib/email');
+const { sendLeaveSubmittedEmail } = await import('../../../lib/email');
 
 // July 2026 calendar used throughout (matches the countWorkingDays suite):
 // 6th=Mon, 8th=Wed, 10th=Fri, 11th=Sat, 12th=Sun, 13th=Mon, 17th=Fri.
@@ -95,7 +94,7 @@ describe('submitLeave', () => {
       endDate: utc('2026-07-07'),
       reason: 'flu',
     });
-    expect(created).toMatchObject({ type: 'SICK', status: 'PENDING', totalDays: 2 });
+    expect(created).toMatchObject({ type: 'SICK', totalDays: 2 });
   });
 
   it('rejects a range containing no working days (400)', async () => {
@@ -125,14 +124,13 @@ describe('submitLeave', () => {
     expect(created.totalDays).toBe(4);
   });
 
-  it('rejects a range overlapping an existing PENDING request (400)', async () => {
+  it('rejects a range overlapping an existing leave record (400)', async () => {
     const { employee, user } = await fullTimerWithThreeAccrualDays();
     await createLeaveRequest({
       employeeId: employee.id,
       startDate: '2026-07-06',
       endDate: '2026-07-08',
       totalDays: 3,
-      status: 'PENDING',
     });
 
     await expect(
@@ -145,46 +143,7 @@ describe('submitLeave', () => {
     ).rejects.toMatchObject({ status: 400, message: /overlaps an existing/ });
   });
 
-  it('rejects a range overlapping an existing APPROVED request (400)', async () => {
-    const { employee, user } = await fullTimerWithThreeAccrualDays();
-    await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-10',
-      totalDays: 5,
-      status: 'APPROVED',
-    });
-
-    await expect(
-      leaveService.submitLeave(authUser(user), {
-        type: 'SICK',
-        startDate: utc('2026-07-09'),
-        endDate: utc('2026-07-13'),
-        reason: null,
-      }),
-    ).rejects.toMatchObject({ status: 400, message: /overlaps an existing/ });
-  });
-
-  it('ignores a REJECTED request when checking for overlap', async () => {
-    const { employee, user } = await fullTimerWithThreeAccrualDays();
-    await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-10',
-      totalDays: 5,
-      status: 'REJECTED',
-    });
-
-    const created = await leaveService.submitLeave(authUser(user), {
-      type: 'SICK',
-      startDate: utc('2026-07-06'),
-      endDate: utc('2026-07-10'),
-      reason: null,
-    });
-    expect(created.status).toBe('PENDING');
-  });
-
-  it("does not treat another employee's overlapping request as a conflict", async () => {
+  it("does not treat another employee's overlapping record as a conflict", async () => {
     const { user } = await fullTimerWithThreeAccrualDays();
     const other = await createEmployee({ joinDate: utc('2026-05-10') });
     await createLeaveRequest({
@@ -192,7 +151,6 @@ describe('submitLeave', () => {
       startDate: '2026-07-06',
       endDate: '2026-07-10',
       totalDays: 5,
-      status: 'APPROVED',
     });
 
     const created = await leaveService.submitLeave(authUser(user), {
@@ -201,7 +159,7 @@ describe('submitLeave', () => {
       endDate: utc('2026-07-10'),
       reason: null,
     });
-    expect(created.status).toBe('PENDING');
+    expect(created.totalDays).toBe(5);
   });
 
   it('rejects PAID leave exceeding the accrued balance (400)', async () => {
@@ -226,13 +184,94 @@ describe('submitLeave', () => {
       endDate: utc('2026-07-08'),
       reason: null,
     });
-    expect(created).toMatchObject({ type: 'PAID', status: 'PENDING', totalDays: 3 });
+    expect(created).toMatchObject({ type: 'PAID', totalDays: 3 });
   });
 
-  it('does not consume the balance until the request is approved', async () => {
-    const { employee, user } = await fullTimerWithThreeAccrualDays();
+  it('consumes the balance at submission, oldest-expiring row first', async () => {
+    const employee = await createEmployee();
+    const user = await createUser({ roleName: 'EMPLOYEE', employeeId: employee.id });
+    // Created first but expiring later — FIFO must skip it while the other has room.
+    const laterExpiry = await createAccrual({
+      employeeId: employee.id,
+      period: '2026-01-01',
+      expiresAt: '2027-09-01',
+      days: 2,
+    });
+    const earlierExpiry = await createAccrual({
+      employeeId: employee.id,
+      period: '2026-02-01',
+      expiresAt: '2027-07-01',
+      days: 2,
+    });
+
     await leaveService.submitLeave(authUser(user), {
       type: 'PAID',
+      startDate: utc('2026-07-06'),
+      endDate: utc('2026-07-07'),
+      reason: null,
+    });
+
+    const [later, earlier] = await Promise.all([
+      prisma.leaveAccrual.findUniqueOrThrow({ where: { id: laterExpiry.id } }),
+      prisma.leaveAccrual.findUniqueOrThrow({ where: { id: earlierExpiry.id } }),
+    ]);
+    expect(Number(earlier.daysConsumed)).toBe(2);
+    expect(Number(later.daysConsumed)).toBe(0);
+  });
+
+  it('rolls the consumption back when the submission is rejected for lack of balance', async () => {
+    // The guard and the consumption share one transaction, so a rejected submission
+    // must leave the accrual untouched rather than half-spent.
+    const employee = await createEmployee({ joinDate: utc('2026-07-05') });
+    const user = await createUser({ roleName: 'EMPLOYEE', employeeId: employee.id });
+
+    await expect(
+      leaveService.submitLeave(authUser(user), {
+        // Mon 6th - Fri 10th = 5 working days against the single accrued day.
+        type: 'PAID',
+        startDate: utc('2026-07-06'),
+        endDate: utc('2026-07-10'),
+        reason: null,
+      }),
+    ).rejects.toMatchObject({ status: 400, message: /Insufficient leave balance/ });
+
+    const consumed = await prisma.leaveAccrual.aggregate({
+      where: { employeeId: employee.id },
+      _sum: { daysConsumed: true },
+    });
+    expect(Number(consumed._sum.daysConsumed)).toBe(0);
+    await expect(prisma.leaveRequest.count({ where: { employeeId: employee.id } })).resolves.toBe(0);
+  });
+
+  it('will not draw from an expired accrual', async () => {
+    const employee = await createEmployee({ employmentType: 'FULL_TIME', isActive: false });
+    const user = await createUser({ roleName: 'EMPLOYEE', employeeId: employee.id });
+    // 5 unused days, but expired relative to the pinned "now". The employee is inactive
+    // so the accrual catch-up cannot top the balance back up.
+    const accrual = await createAccrual({
+      employeeId: employee.id,
+      period: '2024-01-01',
+      expiresAt: '2025-07-01',
+      days: 5,
+    });
+
+    await expect(
+      leaveService.submitLeave(authUser(user), {
+        type: 'PAID',
+        startDate: utc('2026-07-06'),
+        endDate: utc('2026-07-07'),
+        reason: null,
+      }),
+    ).rejects.toMatchObject({ status: 400, message: /Insufficient leave balance/ });
+
+    const after = await prisma.leaveAccrual.findUniqueOrThrow({ where: { id: accrual.id } });
+    expect(Number(after.daysConsumed)).toBe(0);
+  });
+
+  it('does not touch accruals when SICK leave is submitted', async () => {
+    const { employee, user } = await fullTimerWithThreeAccrualDays();
+    await leaveService.submitLeave(authUser(user), {
+      type: 'SICK',
       startDate: utc('2026-07-06'),
       endDate: utc('2026-07-08'),
       reason: null,
@@ -269,287 +308,6 @@ describe('submitLeave', () => {
   });
 });
 
-describe('reviewLeave', () => {
-  it('returns 404 for an unknown request', async () => {
-    const hr = await createUser({ roleName: 'HR' });
-    await expect(
-      leaveService.reviewLeave(999_999, hr.id, { action: 'APPROVE', rejectReason: null }),
-    ).rejects.toMatchObject({ status: 404 });
-  });
-
-  it.each(['APPROVED', 'REJECTED'] as const)(
-    'refuses to review a request already %s (400)',
-    async (status) => {
-      const hr = await createUser({ roleName: 'HR' });
-      const employee = await createEmployee();
-      const request = await createLeaveRequest({
-        employeeId: employee.id,
-        startDate: '2026-07-06',
-        endDate: '2026-07-07',
-        totalDays: 2,
-        status,
-      });
-
-      await expect(
-        leaveService.reviewLeave(request.id, hr.id, { action: 'APPROVE', rejectReason: null }),
-      ).rejects.toMatchObject({ status: 400, message: /Only pending requests/ });
-    },
-  );
-
-  it('records the reviewer and timestamp on approval', async () => {
-    const hr = await createUser({ roleName: 'HR' });
-    const employee = await createEmployee();
-    await createAccrual({ employeeId: employee.id, period: '2026-01-01', expiresAt: '2027-07-01', days: 2 });
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
-      totalDays: 2,
-    });
-
-    const updated = await leaveService.reviewLeave(request.id, hr.id, {
-      action: 'APPROVE',
-      rejectReason: null,
-    });
-
-    expect(updated.status).toBe('APPROVED');
-    expect(updated.reviewedById).toBe(hr.id);
-    expect(updated.reviewedAt).toEqual(NOW);
-  });
-
-  it('consumes accruals oldest-expiring first, not lowest-id first', async () => {
-    const hr = await createUser({ roleName: 'HR' });
-    const employee = await createEmployee();
-    // Created first but expiring later — FIFO must skip it while the other has room.
-    const laterExpiry = await createAccrual({
-      employeeId: employee.id,
-      period: '2026-01-01',
-      expiresAt: '2027-09-01',
-      days: 2,
-    });
-    const earlierExpiry = await createAccrual({
-      employeeId: employee.id,
-      period: '2026-02-01',
-      expiresAt: '2027-07-01',
-      days: 2,
-    });
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
-      totalDays: 2,
-    });
-
-    await leaveService.reviewLeave(request.id, hr.id, { action: 'APPROVE', rejectReason: null });
-
-    const [later, earlier] = await Promise.all([
-      prisma.leaveAccrual.findUniqueOrThrow({ where: { id: laterExpiry.id } }),
-      prisma.leaveAccrual.findUniqueOrThrow({ where: { id: earlierExpiry.id } }),
-    ]);
-    expect(Number(earlier.daysConsumed)).toBe(2);
-    expect(Number(later.daysConsumed)).toBe(0);
-  });
-
-  it('spills over into the next accrual when the first is partly used', async () => {
-    const hr = await createUser({ roleName: 'HR' });
-    const employee = await createEmployee();
-    const first = await createAccrual({
-      employeeId: employee.id,
-      period: '2026-01-01',
-      expiresAt: '2027-07-01',
-      days: 2,
-      daysConsumed: 1,
-    });
-    const second = await createAccrual({
-      employeeId: employee.id,
-      period: '2026-02-01',
-      expiresAt: '2027-08-01',
-      days: 2,
-    });
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-08',
-      totalDays: 3,
-    });
-
-    await leaveService.reviewLeave(request.id, hr.id, { action: 'APPROVE', rejectReason: null });
-
-    const [a, b] = await Promise.all([
-      prisma.leaveAccrual.findUniqueOrThrow({ where: { id: first.id } }),
-      prisma.leaveAccrual.findUniqueOrThrow({ where: { id: second.id } }),
-    ]);
-    expect(Number(a.daysConsumed)).toBe(2);
-    expect(Number(b.daysConsumed)).toBe(2);
-  });
-
-  it('will not draw from an expired accrual', async () => {
-    const hr = await createUser({ roleName: 'HR' });
-    const employee = await createEmployee();
-    // 5 unused days, but expired relative to the pinned "now".
-    await createAccrual({
-      employeeId: employee.id,
-      period: '2024-01-01',
-      expiresAt: '2025-07-01',
-      days: 5,
-    });
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
-      totalDays: 2,
-    });
-
-    await expect(
-      leaveService.reviewLeave(request.id, hr.id, { action: 'APPROVE', rejectReason: null }),
-    ).rejects.toMatchObject({ status: 400, message: /Insufficient leave balance/ });
-  });
-
-  it('leaves the request PENDING when approval fails for lack of balance', async () => {
-    // The balance check at submit time can go stale; the transaction must roll the
-    // status change back rather than approving leave it cannot fund.
-    const hr = await createUser({ roleName: 'HR' });
-    const employee = await createEmployee();
-    await createAccrual({ employeeId: employee.id, period: '2026-01-01', expiresAt: '2027-07-01', days: 1 });
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-10',
-      totalDays: 5,
-    });
-
-    await expect(
-      leaveService.reviewLeave(request.id, hr.id, { action: 'APPROVE', rejectReason: null }),
-    ).rejects.toMatchObject({ status: 400 });
-
-    const after = await prisma.leaveRequest.findUniqueOrThrow({ where: { id: request.id } });
-    expect(after.status).toBe('PENDING');
-  });
-
-  it('does not touch accruals when approving SICK leave', async () => {
-    const hr = await createUser({ roleName: 'HR' });
-    const employee = await createEmployee();
-    const accrual = await createAccrual({
-      employeeId: employee.id,
-      period: '2026-01-01',
-      expiresAt: '2027-07-01',
-      days: 2,
-    });
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
-      totalDays: 2,
-      type: 'SICK',
-    });
-
-    await leaveService.reviewLeave(request.id, hr.id, { action: 'APPROVE', rejectReason: null });
-
-    const after = await prisma.leaveAccrual.findUniqueOrThrow({ where: { id: accrual.id } });
-    expect(Number(after.daysConsumed)).toBe(0);
-  });
-
-  it('stores the reject reason and consumes nothing when rejecting', async () => {
-    const hr = await createUser({ roleName: 'HR' });
-    const employee = await createEmployee();
-    const accrual = await createAccrual({
-      employeeId: employee.id,
-      period: '2026-01-01',
-      expiresAt: '2027-07-01',
-      days: 2,
-    });
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
-      totalDays: 2,
-    });
-
-    const updated = await leaveService.reviewLeave(request.id, hr.id, {
-      action: 'REJECT',
-      rejectReason: 'Team is short-staffed that week',
-    });
-
-    expect(updated).toMatchObject({
-      status: 'REJECTED',
-      rejectReason: 'Team is short-staffed that week',
-    });
-    const after = await prisma.leaveAccrual.findUniqueOrThrow({ where: { id: accrual.id } });
-    expect(Number(after.daysConsumed)).toBe(0);
-  });
-
-  it('blocks review when the start month is in a finalized payroll period (409)', async () => {
-    const hr = await createUser({ roleName: 'HR' });
-    const employee = await createEmployee();
-    await finalizePeriod(2026, 7, hr.id);
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
-      totalDays: 2,
-      type: 'SICK',
-    });
-
-    await expect(
-      leaveService.reviewLeave(request.id, hr.id, { action: 'APPROVE', rejectReason: null }),
-    ).rejects.toMatchObject({ status: 409, message: /finalized/ });
-  });
-
-  it('allows review when a different month is finalized', async () => {
-    const hr = await createUser({ roleName: 'HR' });
-    const employee = await createEmployee();
-    await finalizePeriod(2026, 6, hr.id);
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
-      totalDays: 2,
-      type: 'SICK',
-    });
-
-    const updated = await leaveService.reviewLeave(request.id, hr.id, {
-      action: 'APPROVE',
-      rejectReason: null,
-    });
-    expect(updated.status).toBe('APPROVED');
-  });
-
-  it('emails the decision to the employee', async () => {
-    const hr = await createUser({ roleName: 'HR' });
-    const employee = await createEmployee({ email: 'someone@example.test' });
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
-      totalDays: 2,
-      type: 'SICK',
-    });
-
-    await leaveService.reviewLeave(request.id, hr.id, { action: 'APPROVE', rejectReason: null });
-
-    expect(sendLeaveDecisionEmail).toHaveBeenCalledWith(
-      'someone@example.test',
-      'APPROVED',
-      expect.objectContaining({ totalDays: 2 }),
-    );
-  });
-
-  it('skips the decision email when the employee has no address on file', async () => {
-    const hr = await createUser({ roleName: 'HR' });
-    const employee = await createEmployee({ email: null });
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
-      totalDays: 2,
-      type: 'SICK',
-    });
-
-    await leaveService.reviewLeave(request.id, hr.id, { action: 'APPROVE', rejectReason: null });
-    expect(sendLeaveDecisionEmail).not.toHaveBeenCalled();
-  });
-});
-
 describe('cancelLeave', () => {
   it('returns 404 for an unknown request', async () => {
     const { user } = await createEmployeeWithUser();
@@ -558,13 +316,13 @@ describe('cancelLeave', () => {
     });
   });
 
-  it("refuses to let an employee cancel someone else's request (403)", async () => {
+  it("refuses to let an employee cancel someone else's leave (403)", async () => {
     const { user } = await createEmployeeWithUser();
     const victim = await createEmployee();
     const request = await createLeaveRequest({
       employeeId: victim.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
+      startDate: '2026-07-20',
+      endDate: '2026-07-21',
       totalDays: 2,
     });
 
@@ -577,22 +335,186 @@ describe('cancelLeave', () => {
     ).resolves.not.toBeNull();
   });
 
-  it('lets an employee cancel their own pending request', async () => {
+  it('refunds exactly the days the cancelled PAID leave consumed', async () => {
+    const { employee, user } = await fullTimerWithThreeAccrualDays();
+    const before = await leaveService.getBalance(employee.id);
+
+    const created = await leaveService.submitLeave(authUser(user), {
+      // Mon 20th - Wed 22nd = 3 working days, all three accrued days.
+      type: 'PAID',
+      startDate: utc('2026-07-20'),
+      endDate: utc('2026-07-22'),
+      reason: null,
+    });
+    const during = await leaveService.getBalance(employee.id);
+    expect(before.balance).toBe(3);
+    expect(during.balance).toBe(0);
+
+    await leaveService.cancelLeave(created.id, authUser(user));
+
+    const after = await leaveService.getBalance(employee.id);
+    expect(after.balance).toBe(before.balance);
+    expect(after.usedTotal).toBe(0);
+    await expect(prisma.leaveRequest.findUnique({ where: { id: created.id } })).resolves.toBeNull();
+  });
+
+  it('refunds the earliest-expiring live row first, not the newest', async () => {
+    // Two leaves, so consumption has spilled over: A (Aug) is full and B (Dec) holds the
+    // spill. Cancelling the first leave must unwind A, not B — refunding B would move a day
+    // from the soon-expiring row to the long-lived one and invent spendable balance.
+    // Inactive, so the accrual catch-up cannot add rows behind these two.
+    const employee = await createEmployee({ isActive: false });
+    const user = await createUser({ roleName: 'EMPLOYEE', employeeId: employee.id });
+    const a = await createAccrual({
+      employeeId: employee.id,
+      period: '2025-02-01',
+      expiresAt: '2026-08-01',
+      days: 5,
+    });
+    const b = await createAccrual({
+      employeeId: employee.id,
+      period: '2025-06-01',
+      expiresAt: '2026-12-01',
+      days: 5,
+    });
+
+    const first = await leaveService.submitLeave(authUser(user), {
+      // Mon 20th - Wed 22nd = 3 working days; FIFO drains them from A.
+      type: 'PAID',
+      startDate: utc('2026-07-20'),
+      endDate: utc('2026-07-22'),
+      reason: null,
+    });
+    await leaveService.submitLeave(authUser(user), {
+      // Mon 27th - Wed 29th = 3 more; A takes 2 and B takes the remaining 1.
+      type: 'PAID',
+      startDate: utc('2026-07-27'),
+      endDate: utc('2026-07-29'),
+      reason: null,
+    });
+
+    const [aFull, bSpill] = await Promise.all([
+      prisma.leaveAccrual.findUniqueOrThrow({ where: { id: a.id } }),
+      prisma.leaveAccrual.findUniqueOrThrow({ where: { id: b.id } }),
+    ]);
+    expect(Number(aFull.daysConsumed)).toBe(5);
+    expect(Number(bSpill.daysConsumed)).toBe(1);
+
+    await leaveService.cancelLeave(first.id, authUser(user));
+
+    const [aAfter, bAfter] = await Promise.all([
+      prisma.leaveAccrual.findUniqueOrThrow({ where: { id: a.id } }),
+      prisma.leaveAccrual.findUniqueOrThrow({ where: { id: b.id } }),
+    ]);
+    expect(Number(aAfter.daysConsumed)).toBe(2);
+    expect(Number(bAfter.daysConsumed)).toBe(1);
+  });
+
+  it('refunds to live rows before expired ones', async () => {
+    // The expired row carries consumption from some older leave. The cancelled leave can
+    // only have drawn from the live row, so the whole refund belongs there.
+    const employee = await createEmployee({ isActive: false });
+    const user = await createUser({ roleName: 'EMPLOYEE', employeeId: employee.id });
+    const expired = await createAccrual({
+      employeeId: employee.id,
+      period: '2024-01-01',
+      expiresAt: '2025-07-01',
+      days: 2,
+      daysConsumed: 2,
+    });
+    const live = await createAccrual({
+      employeeId: employee.id,
+      period: '2026-01-01',
+      expiresAt: '2027-07-01',
+      days: 3,
+    });
+
+    const created = await leaveService.submitLeave(authUser(user), {
+      type: 'PAID',
+      startDate: utc('2026-07-20'),
+      endDate: utc('2026-07-21'),
+      reason: null,
+    });
+    const liveConsumed = await prisma.leaveAccrual.findUniqueOrThrow({ where: { id: live.id } });
+    expect(Number(liveConsumed.daysConsumed)).toBe(2);
+
+    await leaveService.cancelLeave(created.id, authUser(user));
+
+    const [liveAfter, expiredAfter] = await Promise.all([
+      prisma.leaveAccrual.findUniqueOrThrow({ where: { id: live.id } }),
+      prisma.leaveAccrual.findUniqueOrThrow({ where: { id: expired.id } }),
+    ]);
+    expect(Number(liveAfter.daysConsumed)).toBe(0);
+    expect(Number(expiredAfter.daysConsumed)).toBe(2);
+  });
+
+  it('refunds nothing when the cancelled leave is SICK', async () => {
+    const { employee, user } = await createEmployeeWithUser();
+    const accrual = await createAccrual({
+      employeeId: employee.id,
+      period: '2026-01-01',
+      expiresAt: '2027-07-01',
+      days: 2,
+      daysConsumed: 2,
+    });
+    const request = await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-07-20',
+      endDate: '2026-07-21',
+      totalDays: 2,
+      type: 'SICK',
+    });
+
+    await leaveService.cancelLeave(request.id, authUser(user));
+
+    const after = await prisma.leaveAccrual.findUniqueOrThrow({ where: { id: accrual.id } });
+    expect(Number(after.daysConsumed)).toBe(2);
+  });
+
+  it('lets an employee cancel on the start date itself', async () => {
     const { employee, user } = await createEmployeeWithUser();
     const request = await createLeaveRequest({
       employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
+      // "Now" is midday on the 15th; the window is inclusive of the first day.
+      startDate: '2026-07-15',
+      endDate: '2026-07-16',
       totalDays: 2,
+      type: 'SICK',
     });
 
     await leaveService.cancelLeave(request.id, authUser(user));
     await expect(prisma.leaveRequest.findUnique({ where: { id: request.id } })).resolves.toBeNull();
   });
 
-  it("lets HR cancel another employee's pending request", async () => {
+  it('refuses to let an employee cancel once the start date has passed (400)', async () => {
+    const { employee, user } = await createEmployeeWithUser();
+    const request = await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-07-14',
+      endDate: '2026-07-16',
+      totalDays: 3,
+      type: 'SICK',
+    });
+
+    await expect(leaveService.cancelLeave(request.id, authUser(user))).rejects.toMatchObject({
+      status: 400,
+      message: /up to and including its start date/,
+    });
+    await expect(
+      prisma.leaveRequest.findUnique({ where: { id: request.id } }),
+    ).resolves.not.toBeNull();
+  });
+
+  it('lets HR cancel past-dated leave, refunding the paid days', async () => {
     const hr = await createUser({ roleName: 'HR' });
     const employee = await createEmployee();
+    const accrual = await createAccrual({
+      employeeId: employee.id,
+      period: '2026-01-01',
+      expiresAt: '2027-07-01',
+      days: 2,
+      daysConsumed: 2,
+    });
     const request = await createLeaveRequest({
       employeeId: employee.id,
       startDate: '2026-07-06',
@@ -601,23 +523,10 @@ describe('cancelLeave', () => {
     });
 
     await leaveService.cancelLeave(request.id, authUser(hr));
+
     await expect(prisma.leaveRequest.findUnique({ where: { id: request.id } })).resolves.toBeNull();
-  });
-
-  it('refuses to cancel an already-approved request (400)', async () => {
-    const { employee, user } = await createEmployeeWithUser();
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
-      totalDays: 2,
-      status: 'APPROVED',
-    });
-
-    await expect(leaveService.cancelLeave(request.id, authUser(user))).rejects.toMatchObject({
-      status: 400,
-      message: /Only pending requests/,
-    });
+    const after = await prisma.leaveAccrual.findUniqueOrThrow({ where: { id: accrual.id } });
+    expect(Number(after.daysConsumed)).toBe(0);
   });
 
   it('refuses to cancel inside a finalized payroll period (409)', async () => {
@@ -626,14 +535,45 @@ describe('cancelLeave', () => {
     await finalizePeriod(2026, 7, hr.id);
     const request = await createLeaveRequest({
       employeeId: employee.id,
-      startDate: '2026-07-06',
-      endDate: '2026-07-07',
+      startDate: '2026-07-20',
+      endDate: '2026-07-21',
       totalDays: 2,
     });
 
     await expect(leaveService.cancelLeave(request.id, authUser(user))).rejects.toMatchObject({
       status: 409,
     });
+  });
+
+  it('blocks HR inside a finalized payroll period too (409)', async () => {
+    // HR is exempt from the date window, not from the month lock: unwinding leave in a
+    // closed month would contradict payslips that are already out.
+    const hr = await createUser({ roleName: 'HR' });
+    const employee = await createEmployee();
+    await finalizePeriod(2026, 7, hr.id);
+    const accrual = await createAccrual({
+      employeeId: employee.id,
+      period: '2026-01-01',
+      expiresAt: '2027-07-01',
+      days: 2,
+      daysConsumed: 2,
+    });
+    const request = await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-07-06',
+      endDate: '2026-07-07',
+      totalDays: 2,
+    });
+
+    await expect(leaveService.cancelLeave(request.id, authUser(hr))).rejects.toMatchObject({
+      status: 409,
+      message: /finalized/,
+    });
+    await expect(
+      prisma.leaveRequest.findUnique({ where: { id: request.id } }),
+    ).resolves.not.toBeNull();
+    const after = await prisma.leaveAccrual.findUniqueOrThrow({ where: { id: accrual.id } });
+    expect(Number(after.daysConsumed)).toBe(2);
   });
 });
 
@@ -736,7 +676,7 @@ describe('listLeave', () => {
     expect(result.data[0].employeeId).toBe(b.id);
   });
 
-  it('filters by status and type', async () => {
+  it('filters by type', async () => {
     const hr = await createUser({ roleName: 'HR' });
     const employee = await createEmployee();
     await createLeaveRequest({
@@ -744,7 +684,6 @@ describe('listLeave', () => {
       startDate: '2026-07-06',
       endDate: '2026-07-07',
       totalDays: 2,
-      status: 'APPROVED',
       type: 'PAID',
     });
     await createLeaveRequest({
@@ -752,17 +691,12 @@ describe('listLeave', () => {
       startDate: '2026-07-13',
       endDate: '2026-07-14',
       totalDays: 2,
-      status: 'PENDING',
       type: 'SICK',
     });
 
-    const approved = await leaveService.listLeave({ ...query, status: 'APPROVED' }, authUser(hr));
-    expect(approved.total).toBe(1);
-    expect(approved.data[0].type).toBe('PAID');
-
     const sick = await leaveService.listLeave({ ...query, type: 'SICK' }, authUser(hr));
     expect(sick.total).toBe(1);
-    expect(sick.data[0].status).toBe('PENDING');
+    expect(sick.data[0].startDate).toEqual(utc('2026-07-13'));
   });
 
   it('paginates while reporting the unpaginated total', async () => {

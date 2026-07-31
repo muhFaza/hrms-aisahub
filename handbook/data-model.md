@@ -1,6 +1,6 @@
 # Data model
 
-PostgreSQL via Prisma. 11 models, 5 enums, 5 migrations. Schema at
+PostgreSQL via Prisma. 11 models, 5 enums, 6 migrations. Schema at
 `server/prisma/schema.prisma`; Prisma CLI configuration at `server/prisma.config.ts`.
 
 Every primary key is `Int @id @default(autoincrement())`.
@@ -53,11 +53,13 @@ Unique on `(employeeId, period)`, plus a CHECK constraint
 Expiry is computed at read time. There is no `expired` column and no job that flips rows.
 
 ### `LeaveRequest`
-A leave request over a date range, with an HR decision.
+Leave taken over a date range. **There is no approval step and no `status` column** — a row
+here is leave that happened. Paid rows have already drawn their days from `LeaveAccrual`,
+but nothing in the database ties the two together: the link exists only in the service that
+writes both inside one transaction.
 
 `totalDays` is working days excluding weekends and holidays, **computed by the application
-and unverifiable by the database**. `reviewedById` is nullable, `ON DELETE SET NULL`.
-`rejectReason` has no constraint tying it to `status = REJECTED`.
+and unverifiable by the database**.
 
 ### `Holiday`
 Standalone table, no foreign keys — joined only by date value in application code.
@@ -110,13 +112,13 @@ write-once by design.
    │          │ 0..1 └────┬─────┘  HR accounts have employeeId = NULL
    └────┬─────┘           │
         │                 │ reviewedById / finalizedById  (all SET NULL)
-        │                 ├──────────┬──────────────┬───────────────┐
-        │ employeeId      ▼          ▼              ▼               ▼
-        │ (all RESTRICT)  LeaveRequest  Overtime  Reimbursement  PayrollPeriod
-        │                    ▲          ▲            ▲               │
-        ├────────────────────┘          │            │               │ payrollPeriodId
-        ├───────────────────────────────┘            │               │ (RESTRICT)
-        ├────────────────────────────────────────────┘               ▼
+        │                 ├──────────────┬───────────────┐
+        │ employeeId      ▼              ▼               ▼
+        │ (all RESTRICT)  Overtime  Reimbursement  PayrollPeriod
+        │                    ▲            ▲               │
+        ├──► LeaveRequest    │            │               │ payrollPeriodId
+        ├────────────────────┘            │               │ (RESTRICT)
+        ├─────────────────────────────────┘               ▼
         ├──► LeaveAccrual   unique(employeeId, period)           ┌─────────┐
         ├──► DailyLog       unique(employeeId, date)             │ Payslip │
         └──► Payslip ───────unique(payrollPeriodId, employeeId)─►└─────────┘
@@ -129,7 +131,7 @@ Two delete behaviours, and the difference matters:
 - **`RESTRICT`** on every `employeeId` and `payrollPeriodId`. You cannot delete an employee
   who has any accrual, log, request or payslip. This is why employees are deactivated, not
   deleted.
-- **`SET NULL`** on all five nullable user references.
+- **`SET NULL`** on all four nullable user references.
 
 ### The `SET NULL` trap
 
@@ -137,18 +139,17 @@ None of these delete rules is declared in `schema.prisma` — Prisma emits them 
 (required relation → RESTRICT, optional → SET NULL). Reading the schema alone will not
 show you this.
 
-Five columns are `SET NULL`, and every one of them destroys **audit attribution** rather
+Four columns are `SET NULL`, and every one of them destroys **audit attribution** rather
 than rows:
 
 | Column | What is lost when the referenced user is deleted |
 | --- | --- |
 | `User.employeeId` | The login survives with no employee profile — indistinguishable from an HR account at schema level |
-| `LeaveRequest.reviewedById` | An APPROVED request with a `reviewedAt` timestamp and no approver |
-| `Overtime.reviewedById` | Same, and this one has money attached — approved overtime feeds `Payslip.overtimePay` |
+| `Overtime.reviewedById` | An APPROVED row with a `reviewedAt` timestamp and no approver, and this one has money attached — approved overtime feeds `Payslip.overtimePay` |
 | `Reimbursement.reviewedById` | The approver of a payout becomes unknown |
 | `PayrollPeriod.finalizedById` | A FINALIZED period with no finalizer. The sign-off on real disbursements |
 
-**Any code that deletes a `User` must reassign these four attribution columns first.**
+**Any code that deletes a `User` must reassign these three attribution columns first.**
 Migration 5 does exactly that and is the reference implementation. Nothing in the schema
 does it automatically, and no `ON DELETE` variant preserves identity.
 
@@ -161,11 +162,12 @@ does it automatically, and no `ON DELETE` variant preserves identity.
 - `PART_TIME` — hourly, `hourlyRate` × logged hours; no paid-leave accrual; no overtime.
 
 **`LeaveType`**
-- `PAID` — draws down the accrual balance, FIFO by expiry date.
+- `PAID` — draws down the accrual balance at submission, FIFO by expiry date.
 - `SICK` — unpaid, no accrual impact, but produces a payroll deduction for full-timers.
 
-**`RequestStatus`** — the shared approval lifecycle for leave, overtime and reimbursements.
-`PENDING` → `APPROVED` or `REJECTED`. Only `APPROVED` rows count toward payroll.
+**`RequestStatus`** — the approval lifecycle for **overtime and reimbursements only**.
+`PENDING` → `APPROVED` or `REJECTED`. Only `APPROVED` rows count toward payroll. Leave used
+this enum until migration 6 removed its approval step; `DailyLog` never had a status.
 
 **`HolidayType`** — why a date is non-working. All four are treated identically by
 leave-day counting; the distinction is classification only.
@@ -197,9 +199,12 @@ Forward-only; Prisma does not generate down migrations.
 | `…090000_phase5_payroll_rate_source` | Schema | Adds `rateSource`, so an operator can tell whether a payslip's rate was live, fallback, or hand-entered. Backfills existing rows to `'API'` |
 | `…100000_leave_accrual_consumption_check` | Constraint | The CHECK on `daysConsumed`. Added because a concurrent-approval race could over-consume an accrual row |
 | `20260730120000_remove_seeded_owner_account` | **Data only** | Removes the retired `owner@aisahub.com` account from already-deployed databases, reassigning its four attribution columns to the oldest remaining active HR user first. Idempotent; degrades gracefully if no successor exists |
+| `20260731090000_remove_leave_approval` | Data **and** schema | Drops leave's approval columns. Guards first (aborting if any pending paid request cannot be funded), consumes the pending paid days FIFO so the balance is not left overstated, deletes REJECTED rows — which would otherwise be indistinguishable from taken leave — then drops `status`, `reviewedById`, `reviewedAt`, `rejectReason` and the reviewer FK |
 
 Migrations 2–4 were all corrective — each fixes something the initial schema left
-unguarded. Migration 5 is the only data-only one.
+unguarded. Migration 5 is the only data-only one. **Migration 6 is not reversible**:
+dropping `status` destroys the taken/rejected distinction, so the only way back is a
+backup.
 
 ---
 
@@ -292,6 +297,6 @@ Two consequences: per-employee list queries and the HR pending-approval queues a
 sequential scans; and every `DELETE` on `User` or `Employee` triggers a full scan of each
 referencing table to enforce the delete rules.
 
-At current scale this is invisible. Adding `@@index([employeeId, status])` to the three
-request tables, plus indexes on the four attribution columns and `Payslip.employeeId`, is
+At current scale this is invisible. Adding `@@index([employeeId, status])` to `Overtime` and
+`Reimbursement`, `@@index([employeeId])` to `LeaveRequest`, plus indexes on the four attribution columns and `Payslip.employeeId`, is
 the cheapest available improvement and should accompany the next schema change.

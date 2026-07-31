@@ -109,13 +109,14 @@ status code — Zod strips unknown keys silently, so a 200 does not prove a fiel
 
 ## Deleting a User
 
-Never a plain `DELETE`. Five foreign keys are `ON DELETE SET NULL`, so deleting a user
-silently strips the approver from approved leave, overtime and reimbursements, and the
-finalizer from finalized payroll periods — destroying audit trail on a payroll system
-without raising an error.
+Never a plain `DELETE`. Four foreign keys are `ON DELETE SET NULL`, so deleting a user
+silently strips the approver from approved overtime and reimbursements, and the finalizer
+from finalized payroll periods — destroying audit trail on a payroll system without raising
+an error.
 
-Reassign those four columns first. `prisma/migrations/20260730120000_remove_seeded_owner_account`
-is the reference implementation.
+Reassign those three columns first. `prisma/migrations/20260730120000_remove_seeded_owner_account`
+is the reference implementation; it also reassigns a leave reviewer, a column that no longer
+exists now that leave has no approval step.
 
 ## Things that look wrong but are intentional
 

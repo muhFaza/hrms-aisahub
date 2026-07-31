@@ -32,7 +32,7 @@ function buildNavItems(
     return [
       { key: '/dashboard', label: 'Dashboard', icon: <DashboardOutlined /> },
       { key: '/employees', label: 'Employees', icon: <TeamOutlined /> },
-      { key: '/leave', label: 'Leave', icon: <CalendarOutlined /> },
+      { key: '/leave', label: 'All Leave', icon: <CalendarOutlined /> },
       { key: '/holidays', label: 'Holidays', icon: <ScheduleOutlined /> },
       { key: '/daily-logs', label: 'Daily Logs', icon: <FileTextOutlined /> },
       { key: '/overtime', label: 'Overtime', icon: <ClockCircleOutlined /> },

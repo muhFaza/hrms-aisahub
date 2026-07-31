@@ -143,15 +143,14 @@ async function computeRows(
       where: { status: 'APPROVED', date: { gte: monthStart, lte: monthEnd } },
       select: { id: true, employeeId: true, date: true, amount: true, status: true },
     }),
-    // Sick leave can span months; include any APPROVED SICK request overlapping the month.
+    // Sick leave can span months; include any SICK record overlapping the month.
     prisma.leaveRequest.findMany({
       where: {
-        status: 'APPROVED',
         type: 'SICK',
         startDate: { lte: monthEnd },
         endDate: { gte: monthStart },
       },
-      select: { id: true, employeeId: true, type: true, status: true, startDate: true, endDate: true },
+      select: { id: true, employeeId: true, type: true, startDate: true, endDate: true },
     }),
     prisma.holiday.findMany({
       where: { date: { gte: monthStart, lte: monthEnd } },
@@ -185,7 +184,6 @@ async function computeRows(
         .map((s) => ({
           id: s.id,
           type: s.type,
-          status: s.status,
           startDate: s.startDate,
           endDate: s.endDate,
         })),

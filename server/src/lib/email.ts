@@ -44,7 +44,8 @@ function leaveDetailsTable(data: LeaveEmailData): string {
     </table>`;
 }
 
-// Notifies every active HR-role account when a leave request is submitted.
+// Notifies every active HR-role account when leave is submitted. There is no approval
+// step, so this is HR's only signal that the leave was taken.
 export async function sendLeaveSubmittedEmail(data: LeaveEmailData): Promise<void> {
   const hrUsers = await prisma.user.findMany({
     where: { isActive: true, role: { name: 'HR' } },
@@ -53,11 +54,11 @@ export async function sendLeaveSubmittedEmail(data: LeaveEmailData): Promise<voi
   const recipients = hrUsers.map((user) => user.email);
   const html = `
     <div style="font-family:Arial,sans-serif;font-size:14px;color:#333">
-      <h2 style="color:#1677ff">New Leave Request</h2>
-      <p>A new leave request is awaiting review.</p>
+      <h2 style="color:#1677ff">Leave Recorded</h2>
+      <p>An employee has recorded leave.</p>
       ${leaveDetailsTable(data)}
     </div>`;
-  await sendMail(recipients, `Leave request from ${data.employeeName}`, html);
+  await sendMail(recipients, `Leave recorded by ${data.employeeName}`, html);
 }
 
 interface PayslipEmailData {
@@ -132,25 +133,4 @@ export async function sendPayslipEmail(to: string, data: PayslipEmailData): Prom
     console.error(`[email] failed to send payslip to ${to}:`, err instanceof Error ? err.message : err);
     return false;
   }
-}
-
-// Notifies the requester when HR approves or rejects their leave request.
-export async function sendLeaveDecisionEmail(
-  to: string,
-  status: 'APPROVED' | 'REJECTED',
-  data: LeaveEmailData & { rejectReason?: string | null },
-): Promise<void> {
-  const color = status === 'APPROVED' ? '#52c41a' : '#ff4d4f';
-  const rejectRow =
-    status === 'REJECTED'
-      ? `<p><strong>Reason for rejection:</strong> ${data.rejectReason ?? '-'}</p>`
-      : '';
-  const html = `
-    <div style="font-family:Arial,sans-serif;font-size:14px;color:#333">
-      <h2 style="color:${color}">Leave Request ${status}</h2>
-      <p>Your leave request has been <strong>${status.toLowerCase()}</strong>.</p>
-      ${leaveDetailsTable(data)}
-      ${rejectRow}
-    </div>`;
-  await sendMail(to, `Your leave request was ${status.toLowerCase()}`, html);
 }

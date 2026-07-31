@@ -98,10 +98,10 @@ register static routes before parameterized ones (`/leave/balance` must precede
 | `accrual.ts` | Leave accrual: pure maths (`computeBalance`, `planFifoAllocation`) plus the database-touching `ensureAccrualsUpToDate` / `getBalanceBreakdown` |
 | `payroll.ts` | `computePayslipRow` — deliberately database-free |
 | `periodLock.ts` | `assertPeriodEditable(date)` — throws 409 if that month's payroll is finalized |
-| `email.ts` | Three templates. `sendMail` never throws; SMTP failures only log |
+| `email.ts` | Two templates. `sendMail` never throws; SMTP failures only log |
 | `fx.ts` | The one external HTTP call — USD→IDR, 5s timeout, returns `null` on every failure mode |
 
-`periodLock` is worth internalising: it is called from leave review/cancel, daily-log
+`periodLock` is worth internalising: it is called from leave cancel, daily-log
 create/update/delete, overtime create/review/cancel and reimbursement
 create/review/cancel. Finalizing a payroll month freezes every record dated in it.
 

@@ -5,7 +5,7 @@ import { useLeaveCalendar, leaveTypeColor } from '../api/leave';
 import { holidayTypeColor, holidayTypeLabel } from '../api/holidays';
 
 // Shared leave/holiday calendar (design §6): per date cell shows holiday badges and
-// approved-leave badges (employee nickname). Month navigation refetches.
+// leave badges (employee nickname). Month navigation refetches.
 export default function LeaveCalendar() {
   const [panel, setPanel] = useState<Dayjs>(dayjs());
   const month = panel.format('YYYY-MM');

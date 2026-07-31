@@ -25,7 +25,7 @@ interface UpcomingHoliday {
 // Who is off today — public within the company, so both roles get the same list.
 async function getOnLeaveToday(today: Date): Promise<OnLeaveTodayEntry[]> {
   const leaves = await prisma.leaveRequest.findMany({
-    where: { status: 'APPROVED', startDate: { lte: today }, endDate: { gte: today } },
+    where: { startDate: { lte: today }, endDate: { gte: today } },
     include: { employee: { select: { fullName: true } } },
     orderBy: { endDate: 'asc' },
   });
@@ -59,20 +59,18 @@ export async function getHrDashboard() {
     active,
     fullTime,
     partTime,
-    pendingLeave,
     pendingOvertime,
     pendingReimbursements,
     onLeaveToday,
     upcomingHolidays,
     latestPeriod,
-    approvedLeaves,
+    monthLeaves,
     monthHolidays,
   ] = await Promise.all([
     prisma.employee.count(),
     prisma.employee.count({ where: { isActive: true } }),
     prisma.employee.count({ where: { employmentType: 'FULL_TIME' } }),
     prisma.employee.count({ where: { employmentType: 'PART_TIME' } }),
-    prisma.leaveRequest.count({ where: { status: 'PENDING' } }),
     prisma.overtime.count({ where: { status: 'PENDING' } }),
     prisma.reimbursement.count({ where: { status: 'PENDING' } }),
     getOnLeaveToday(today),
@@ -82,7 +80,7 @@ export async function getHrDashboard() {
       include: { _count: { select: { payslips: true } } },
     }),
     prisma.leaveRequest.findMany({
-      where: { status: 'APPROVED', startDate: { lte: monthEnd }, endDate: { gte: monthStart } },
+      where: { startDate: { lte: monthEnd }, endDate: { gte: monthStart } },
       select: { startDate: true, endDate: true },
     }),
     prisma.holiday.findMany({
@@ -91,11 +89,11 @@ export async function getHrDashboard() {
     }),
   ]);
 
-  // Approved leave days that actually fall within the current month (clip cross-month
-  // requests, exclude weekends/holidays — same rule as the working-day counter).
+  // Leave days that actually fall within the current month (clip cross-month records,
+  // exclude weekends/holidays — same rule as the working-day counter).
   const holidayKeys = monthHolidays.map((holiday) => holiday.date.toISOString().slice(0, 10));
   let leaveThisMonth = 0;
-  for (const leave of approvedLeaves) {
+  for (const leave of monthLeaves) {
     const start = leave.startDate > monthStart ? leave.startDate : monthStart;
     const end = leave.endDate < monthEnd ? leave.endDate : monthEnd;
     if (start > end) continue;
@@ -104,8 +102,8 @@ export async function getHrDashboard() {
 
   return {
     headcount: { total, fullTime, partTime, active },
+    // Leave has no approval queue; only overtime and reimbursements are reviewed.
     pendingApprovals: {
-      leave: pendingLeave,
       overtime: pendingOvertime,
       reimbursements: pendingReimbursements,
     },
@@ -141,7 +139,7 @@ export async function getEmployeeDashboard(actor: AuthUser) {
   if (!employeeId) {
     return {
       leaveBalance: null,
-      pending: { leave: 0, overtime: 0, reimbursements: 0 },
+      pending: { overtime: 0, reimbursements: 0 },
       onLeaveToday,
       upcomingHolidays,
       thisMonth: {},
@@ -155,9 +153,8 @@ export async function getEmployeeDashboard(actor: AuthUser) {
   });
   const isFullTime = employee?.employmentType === 'FULL_TIME';
 
-  const [pendingLeave, pendingOvertime, pendingReimbursements, latestPayslip, monthHours] =
+  const [pendingOvertime, pendingReimbursements, latestPayslip, monthHours] =
     await Promise.all([
-      prisma.leaveRequest.count({ where: { employeeId, status: 'PENDING' } }),
       prisma.overtime.count({ where: { employeeId, status: 'PENDING' } }),
       prisma.reimbursement.count({ where: { employeeId, status: 'PENDING' } }),
       prisma.payslip.findFirst({
@@ -183,7 +180,6 @@ export async function getEmployeeDashboard(actor: AuthUser) {
   return {
     leaveBalance,
     pending: {
-      leave: pendingLeave,
       overtime: pendingOvertime,
       reimbursements: pendingReimbursements,
     },

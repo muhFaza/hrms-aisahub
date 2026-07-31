@@ -6,8 +6,8 @@ import type { AuthUser } from '../../middleware/auth';
 import { countWorkingDays } from '../../lib/workingDays';
 import { ensureAccrualsUpToDate, getBalanceBreakdown, planFifoAllocation } from '../../lib/accrual';
 import { assertPeriodEditable } from '../../lib/periodLock';
-import { sendLeaveDecisionEmail, sendLeaveSubmittedEmail } from '../../lib/email';
-import type { CreateLeaveInput, ListLeaveQuery, ReviewLeaveInput } from './schemas';
+import { sendLeaveSubmittedEmail } from '../../lib/email';
+import type { CreateLeaveInput, ListLeaveQuery } from './schemas';
 
 const requestInclude = Prisma.validator<Prisma.LeaveRequestInclude>()({
   employee: { select: { fullName: true, nickname: true, email: true } },
@@ -26,10 +26,6 @@ function serializeRequest(request: RequestRow) {
     endDate: request.endDate,
     totalDays: Number(request.totalDays),
     reason: request.reason,
-    status: request.status,
-    reviewedById: request.reviewedById,
-    reviewedAt: request.reviewedAt,
-    rejectReason: request.rejectReason,
     createdAt: request.createdAt,
   };
 }
@@ -41,7 +37,6 @@ function toUtcDate(date: Date): Date {
 
 export async function listLeave(query: ListLeaveQuery, actor: AuthUser) {
   const where: Prisma.LeaveRequestWhereInput = {};
-  if (query.status) where.status = query.status;
   if (query.type) where.type = query.type;
 
   if (actor.roleName === 'HR') {
@@ -95,40 +90,54 @@ export async function submitLeave(actor: AuthUser, input: CreateLeaveInput) {
     throw new HttpError(400, 'The selected range has no working days (weekends and holidays are excluded)');
   }
 
-  // An employee cannot double-book overlapping PENDING/APPROVED requests.
-  const overlap = await prisma.leaveRequest.findFirst({
-    where: {
-      employeeId: employee.id,
-      status: { in: ['PENDING', 'APPROVED'] },
-      startDate: { lte: endDate },
-      endDate: { gte: startDate },
-    },
-  });
-  if (overlap) {
-    throw new HttpError(400, 'This date range overlaps an existing pending or approved request');
-  }
-
   if (input.type === 'PAID') {
     await ensureAccrualsUpToDate(employee.id);
-    const { balance } = await getBalanceBreakdown(employee.id);
-    if (balance < totalDays) {
-      throw new HttpError(
-        400,
-        `Insufficient leave balance: requested ${totalDays} day(s) but only ${balance} available`,
-      );
-    }
   }
 
-  const created = await prisma.leaveRequest.create({
-    data: {
-      employeeId: employee.id,
-      type: input.type,
-      startDate,
-      endDate,
-      totalDays,
-      reason: input.reason ?? null,
-    },
-    include: requestInclude,
+  // The overlap check, the balance guard, the consumption and the create are one
+  // transaction: leave takes effect on submit, so nothing may come between checking
+  // the balance and spending it.
+  const created = await prisma.$transaction(async (tx) => {
+    // Serialize this employee's submissions on their own Employee row. READ COMMITTED lets
+    // two concurrent submissions both read "no overlap" and both insert, and there is no
+    // exclusion constraint to catch it. Defence in depth: the conditional increment in
+    // consumePaidLeave and the CHECK constraint still stand behind this.
+    await tx.$queryRaw`SELECT id FROM "Employee" WHERE id = ${employee.id} FOR UPDATE`;
+
+    // Every stored row is leave that is taken, so any overlap is a double-booking.
+    const overlap = await tx.leaveRequest.findFirst({
+      where: {
+        employeeId: employee.id,
+        startDate: { lte: endDate },
+        endDate: { gte: startDate },
+      },
+    });
+    if (overlap) {
+      throw new HttpError(400, 'This date range overlaps an existing leave record');
+    }
+
+    if (input.type === 'PAID') {
+      const balance = await availableBalance(tx, employee.id);
+      if (balance < totalDays) {
+        throw new HttpError(
+          400,
+          `Insufficient leave balance: requested ${totalDays} day(s) but only ${balance} available`,
+        );
+      }
+      await consumePaidLeave(tx, employee.id, totalDays);
+    }
+
+    return tx.leaveRequest.create({
+      data: {
+        employeeId: employee.id,
+        type: input.type,
+        startDate,
+        endDate,
+        totalDays,
+        reason: input.reason ?? null,
+      },
+      include: requestInclude,
+    });
   });
 
   // Fire-and-forget HR notification; failures are caught inside the email helper.
@@ -142,6 +151,22 @@ export async function submitLeave(actor: AuthUser, input: CreateLeaveInput) {
   });
 
   return serializeRequest(created);
+}
+
+// Remaining days on non-expired rows, read through the caller's transaction client so the
+// guard and the consumption that follows it see the same snapshot.
+async function availableBalance(
+  tx: Prisma.TransactionClient,
+  employeeId: number,
+): Promise<number> {
+  const accruals = await tx.leaveAccrual.findMany({
+    where: { employeeId, expiresAt: { gt: new Date() } },
+    select: { days: true, daysConsumed: true },
+  });
+  return accruals.reduce(
+    (sum, accrual) => sum + (Number(accrual.days) - Number(accrual.daysConsumed)),
+    0,
+  );
 }
 
 // FIFO consumption across non-expired rows, oldest-expiring first (design §4).
@@ -182,58 +207,48 @@ async function consumePaidLeave(
   }
 }
 
-export async function reviewLeave(id: number, reviewerUserId: number, input: ReviewLeaveInput) {
-  const request = await prisma.leaveRequest.findUnique({
-    where: { id },
-    include: requestInclude,
+// Refund on cancellation, unwinding where FIFO consumption actually drew from: non-expired
+// rows first in FIFO order (oldest-expiring first), then expired rows in the same order.
+//
+// Refunding newest-first would migrate a day from a soon-expiring row to a longer-lived one
+// whenever a second leave had spilled over, manufacturing usable future balance. Taking
+// expired rows last means the refund only reaches them to absorb a remainder — days that
+// land there are unspendable and lost, which is the accepted asymmetry: crediting a live row
+// instead would silently extend an expiry date.
+//
+// Nothing records which rows a given leave drew from, so this is a reconstruction, not a
+// replay. It is chosen to never invent spendable days.
+async function refundPaidLeave(
+  tx: Prisma.TransactionClient,
+  employeeId: number,
+  totalDays: number,
+): Promise<void> {
+  const now = new Date();
+  const rows = await tx.leaveAccrual.findMany({
+    where: { employeeId, daysConsumed: { gt: 0 } },
   });
-  if (!request) {
-    throw new HttpError(404, 'Leave request not found');
-  }
-  if (request.status !== 'PENDING') {
-    throw new HttpError(400, 'Only pending requests can be reviewed');
-  }
-  // Reviewing affects the leave's start month; block if that period is finalized.
-  await assertPeriodEditable(request.startDate);
+  const byFifo = (a: { expiresAt: Date; period: Date }, b: { expiresAt: Date; period: Date }) =>
+    a.expiresAt.getTime() - b.expiresAt.getTime() || a.period.getTime() - b.period.getTime();
+  const accruals = [
+    ...rows.filter((row) => row.expiresAt > now).sort(byFifo),
+    ...rows.filter((row) => row.expiresAt <= now).sort(byFifo),
+  ];
 
-  const reviewedAt = new Date();
-
-  const updated = await prisma.$transaction(async (tx) => {
-    if (input.action === 'APPROVE') {
-      if (request.type === 'PAID') {
-        await consumePaidLeave(tx, request.employeeId, Number(request.totalDays));
-      }
-      return tx.leaveRequest.update({
-        where: { id },
-        data: { status: 'APPROVED', reviewedById: reviewerUserId, reviewedAt },
-        include: requestInclude,
-      });
+  let remaining = totalDays;
+  for (const accrual of accruals) {
+    if (remaining <= 0) break;
+    const give = Math.min(Number(accrual.daysConsumed), remaining);
+    // Conditional decrement, mirroring consumePaidLeave: only apply while the row still
+    // holds `give` consumed days, so a concurrent refund cannot drive it below zero.
+    const result = await tx.leaveAccrual.updateMany({
+      where: { id: accrual.id, daysConsumed: { gte: give } },
+      data: { daysConsumed: { decrement: give } },
+    });
+    if (result.count !== 1) {
+      throw new HttpError(409, 'Leave balance changed, please retry');
     }
-    return tx.leaveRequest.update({
-      where: { id },
-      data: {
-        status: 'REJECTED',
-        reviewedById: reviewerUserId,
-        reviewedAt,
-        rejectReason: input.rejectReason ?? null,
-      },
-      include: requestInclude,
-    });
-  });
-
-  if (updated.employee?.email) {
-    void sendLeaveDecisionEmail(updated.employee.email, updated.status as 'APPROVED' | 'REJECTED', {
-      employeeName: updated.employee.fullName,
-      type: updated.type,
-      startDate: updated.startDate,
-      endDate: updated.endDate,
-      totalDays: Number(updated.totalDays),
-      reason: updated.reason,
-      rejectReason: updated.rejectReason,
-    });
+    remaining -= give;
   }
-
-  return serializeRequest(updated);
 }
 
 export async function cancelLeave(id: number, actor: AuthUser) {
@@ -241,14 +256,25 @@ export async function cancelLeave(id: number, actor: AuthUser) {
   if (!request) {
     throw new HttpError(404, 'Leave request not found');
   }
-  if (actor.roleName !== 'HR' && request.employeeId !== actor.employeeId) {
+  const isHr = actor.roleName === 'HR';
+  if (!isHr && request.employeeId !== actor.employeeId) {
     throw new HttpError(403, 'You can only cancel your own requests');
   }
-  if (request.status !== 'PENDING') {
-    throw new HttpError(400, 'Only pending requests can be cancelled');
+  // Once the first day has passed the leave has been taken; only HR may unwind it, as a
+  // correction. The finalized-month freeze binds HR too — payslips are already out.
+  if (!isHr && toUtcDate(new Date()) > request.startDate) {
+    throw new HttpError(400, 'Leave can only be cancelled up to and including its start date');
   }
-  await assertPeriodEditable(request.startDate);
-  await prisma.leaveRequest.delete({ where: { id } });
+
+  await prisma.$transaction(async (tx) => {
+    // Read through the transaction: payroll must not be able to finalize the month
+    // between this check and the refund it guards.
+    await assertPeriodEditable(request.startDate, tx);
+    if (request.type === 'PAID') {
+      await refundPaidLeave(tx, request.employeeId, Number(request.totalDays));
+    }
+    await tx.leaveRequest.delete({ where: { id } });
+  });
 }
 
 export async function getBalance(employeeId: number) {
@@ -288,7 +314,6 @@ export async function getCalendar(month: string) {
   const [leaves, holidays] = await Promise.all([
     prisma.leaveRequest.findMany({
       where: {
-        status: 'APPROVED',
         startDate: { lte: monthEnd },
         endDate: { gte: monthStart },
       },
