@@ -73,7 +73,6 @@ export interface MyPayslip {
   totalIdr: number;
   totalUsd: number;
   detail: PayslipDetail;
-  emailSentAt: string | null;
 }
 
 export const payrollStatusColor: Record<PayrollStatus, string> = {

@@ -28,11 +28,6 @@ services:
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-12h}
       # Seeds demo data only when the database is empty (see docker-entrypoint.sh).
       SEED_ON_START: ${SEED_ON_START:-true}
-      SMTP_HOST: ${SMTP_HOST:-}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-HRMS Aisahub <no-reply@aisahub.com>}
       OWNER_EMAIL: ${OWNER_EMAIL:-owner@aisahub.com}
     volumes:
       - hrms-uploads:/app/uploads

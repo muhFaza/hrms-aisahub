@@ -1,6 +1,6 @@
 # Data model
 
-PostgreSQL via Prisma. 11 models, 5 enums, 5 migrations. Schema at
+PostgreSQL via Prisma. 12 models, 6 enums, 6 migrations. Schema at
 `server/prisma/schema.prisma`; Prisma CLI configuration at `server/prisma.config.ts`.
 
 Every primary key is `Int @id @default(autoincrement())`.
@@ -91,9 +91,24 @@ One payroll run for a year/month.
 The immutable per-employee result, written when a period is finalized. Unique on
 `(payrollPeriodId, employeeId)` — that constraint is what makes finalize idempotent.
 
-`detail` is a JSONB snapshot of the full computation. `emailSentAt` is null until the
-payslip email is successfully dispatched. There is **no `updatedAt`** — the table is
-write-once by design.
+`detail` is a JSONB snapshot of the full computation. There is **no `updatedAt`** — the
+table is write-once by design. (There was an `emailSentAt` column; it went with the email
+system, and employees now learn of a payslip through a `PAYSLIP_AVAILABLE` notification.)
+
+### `Notification`
+One row per recipient per event. `payload` is a JSONB blob whose shape depends on `type` —
+the server stores structured data and the client owns all copy, so adding a field to a
+payload needs no migration.
+
+`entityId` is **deliberately not a foreign key.** Cancelling a request hard-deletes the row,
+and the `REQUEST_CANCELLED` notification has to outlive the record it describes; a foreign
+key would either block the cancel or cascade the notification away. It stays a loose `Int`
+and nothing assumes it still resolves.
+
+`groupKey` (`"<ENTITY>:<id>"`) ties an HR fan-out together so that acting on the record
+resolves every copy at once. It is null on notifications sent to a single employee.
+
+`recipientId` is the one `User` foreign key that **cascades** — see [Relationships](#relationships).
 
 ---
 
@@ -124,12 +139,20 @@ write-once by design.
         Holiday — standalone. No foreign keys.
 ```
 
-Two delete behaviours, and the difference matters:
+`Notification` hangs off `User` twice and is omitted above to keep the diagram legible:
+`recipientId` (**CASCADE**) and `resolvedById` (SET NULL). Its `entityId` points at a leave
+request, overtime, reimbursement or payslip but is *not* a foreign key — see the entity note.
+
+Three delete behaviours, and the difference matters:
 
 - **`RESTRICT`** on every `employeeId` and `payrollPeriodId`. You cannot delete an employee
   who has any accrual, log, request or payslip. This is why employees are deactivated, not
   deleted.
-- **`SET NULL`** on all five nullable user references.
+- **`SET NULL`** on all five nullable user references, plus `Notification.resolvedById`.
+- **`CASCADE`** on `Notification.recipientId` only. This is the one place cascading is
+  right: a notification is a delivery record for one person, not audit trail, so it should
+  die with the account. It is explicit in `schema.prisma` rather than implicit, and it
+  needs no reassignment when a user is deleted.
 
 ### The `SET NULL` trap
 

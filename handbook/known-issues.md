@@ -10,12 +10,6 @@ Ordered roughly by how much they would matter if the system carried real payroll
 
 ## Security-relevant
 
-**Email templates interpolate user input into HTML without escaping.**
-`server/src/lib/email.ts` builds HTML with template literals containing employee names,
-leave reasons and rejection reasons. An employee could put markup in a leave reason and it
-would render in HR's inbox. Low impact for an internal tool with trusted users; would need
-escaping before any wider deployment.
-
 **Upload extensions are not validated.** `server/src/middleware/upload.ts` sanitizes the
 filename base to `[a-zA-Z0-9-_]` but keeps the client's extension verbatim. The MIME
 allowlist (PDF/JPEG/PNG) is checked against the **client-supplied** `Content-Type`, which

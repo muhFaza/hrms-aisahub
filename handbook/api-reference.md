@@ -1,6 +1,6 @@
 # API reference
 
-Base path for everything: **`/api/v1`**. 45 endpoints across ten modules.
+Base path for everything: **`/api/v1`**. 49 endpoints across eleven modules.
 
 Authentication is a bearer token: `Authorization: Bearer <jwt>`. Every route except
 `POST /auth/login` and `GET /health` requires one.
@@ -129,7 +129,7 @@ multer populates the multipart text fields first. That is why the schema uses `z
 | POST | `/payroll/periods` | HR | Create a DRAFT period, fetch the live rate |
 | GET | `/payroll/periods/:id` | HR | Preview — computed live for DRAFT, read from snapshots for FINALIZED |
 | PATCH | `/payroll/periods/:id` | HR | Override the exchange rate |
-| POST | `/payroll/periods/:id/finalize` | HR | Snapshot payslips, lock the month, email everyone |
+| POST | `/payroll/periods/:id/finalize` | HR | Snapshot payslips, notify every employee, lock the month |
 | DELETE | `/payroll/periods/:id` | HR | Delete a DRAFT period |
 
 `/my-payslips` is registered before `/periods/:id` so it is not swallowed by the parameter
@@ -143,6 +143,29 @@ route. Rate override and delete both return 409 unless the period is DRAFT.
 
 One endpoint, two response shapes. An employee with no linked profile gets a zeroed shape
 rather than an error.
+
+## `notifications`
+
+| Method | Path | Role | Purpose |
+| --- | --- | --- | --- |
+| GET | `/notifications` | any | Own notifications, newest first. `unreadOnly` plus the usual `page`/`pageSize` |
+| GET | `/notifications/unread-count` | any | `{ count }` — what the header bell badge polls |
+| POST | `/notifications/read-all` | any | Mark every unread one read, returns `{ updated }` |
+| PATCH | `/notifications/:id/read` | any | Mark one read; already-read is a 200 no-op |
+
+**There is no create endpoint.** Notifications are written only by the domain services, in
+the same transaction as the event that caused them — see
+[notifications.md](notifications.md).
+
+Every query is scoped to `req.user.userId`, so someone else's notification is a **404**,
+not a 403: the endpoint never confirms the id exists. `/unread-count` and `/read-all` are
+registered before `/:id/read`.
+
+A row carries `type`, `entityType`, `entityId`, a type-specific `payload`, `readAt`,
+`resolvedAt` and a flattened `resolvedByName` for the "Handled by …" line. `entityId` is
+deliberately not a foreign key — cancelling a request hard-deletes it, and the
+"this was cancelled" notification has to outlive the record it describes, so the client
+never assumes the target still resolves.
 
 ---
 

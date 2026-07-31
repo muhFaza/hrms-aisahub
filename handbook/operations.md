@@ -84,11 +84,10 @@ are mandatory, and the process **throws at startup** if either is missing.
 | `SERVE_CLIENT` | No | `false` | `true` makes the API also serve the built web app. Set in the image; leave unset locally |
 | `CLIENT_DIST` | No | `<cwd>/client-dist` | Where the built web app lives |
 | `UPLOAD_DIR` | No | `<cwd>/uploads` | Where uploaded files are written |
-| `SMTP_HOST` | No | *(blank)* | Blank disables real email. The app still works — sends are logged and skipped |
-| `SMTP_PORT` | No | `587` | |
-| `SMTP_USER` / `SMTP_PASS` | No | *(blank)* | |
-| `SMTP_FROM` | No | `HRMS Aisahub <no-reply@aisahub.com>` | |
 | `TEST_DATABASE_URL` | No | derived — `hrms` → `hrms_test` | Overrides which database the test suite uses. See [testing.md](testing.md) |
+
+There are no `SMTP_*` variables. Notifications are in-app rows, so the deployment has no
+mail configuration and no outbound mail dependency at all.
 
 **Web app:** exactly one variable, `VITE_DEV_API_TARGET` (default `http://localhost:5000`),
 and it only configures the *development proxy*. There is no API-URL variable, because the

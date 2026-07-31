@@ -14,14 +14,6 @@ import {
 } from '../../../__tests__/helpers/factories';
 import * as leaveService from '../service';
 
-// Notifications are fire-and-forget; stubbing them keeps the suite off SMTP and
-// lets the tests assert that a decision actually triggers one.
-vi.mock('../../../lib/email', () => ({
-  sendLeaveSubmittedEmail: vi.fn().mockResolvedValue(undefined),
-  sendLeaveDecisionEmail: vi.fn().mockResolvedValue(undefined),
-}));
-const { sendLeaveDecisionEmail, sendLeaveSubmittedEmail } = await import('../../../lib/email');
-
 // July 2026 calendar used throughout (matches the countWorkingDays suite):
 // 6th=Mon, 8th=Wed, 10th=Fri, 11th=Sat, 12th=Sun, 13th=Mon, 17th=Fri.
 const NOW = new Date('2026-07-15T12:00:00.000Z');
@@ -258,14 +250,31 @@ describe('submitLeave', () => {
   });
 
   it('notifies HR that a request was submitted', async () => {
+    const hr = await createUser({ roleName: 'HR' });
     const { user } = await fullTimerWithThreeAccrualDays();
-    await leaveService.submitLeave(authUser(user), {
+    const created = await leaveService.submitLeave(authUser(user), {
       type: 'SICK',
       startDate: utc('2026-07-06'),
       endDate: utc('2026-07-07'),
       reason: 'flu',
     });
-    expect(sendLeaveSubmittedEmail).toHaveBeenCalledOnce();
+
+    const notifications = await prisma.notification.findMany();
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      recipientId: hr.id,
+      type: 'LEAVE_SUBMITTED',
+      entityType: 'LEAVE_REQUEST',
+      entityId: created.id,
+      groupKey: `LEAVE_REQUEST:${created.id}`,
+      readAt: null,
+    });
+    expect(notifications[0].payload).toMatchObject({
+      leaveType: 'SICK',
+      startDate: '2026-07-06',
+      endDate: '2026-07-07',
+      totalDays: 2,
+    });
   });
 });
 
@@ -514,9 +523,9 @@ describe('reviewLeave', () => {
     expect(updated.status).toBe('APPROVED');
   });
 
-  it('emails the decision to the employee', async () => {
+  it('notifies the employee of the decision', async () => {
     const hr = await createUser({ roleName: 'HR' });
-    const employee = await createEmployee({ email: 'someone@example.test' });
+    const { employee, user } = await createEmployeeWithUser();
     const request = await createLeaveRequest({
       employeeId: employee.id,
       startDate: '2026-07-06',
@@ -525,18 +534,30 @@ describe('reviewLeave', () => {
       type: 'SICK',
     });
 
-    await leaveService.reviewLeave(request.id, hr.id, { action: 'APPROVE', rejectReason: null });
+    await leaveService.reviewLeave(request.id, hr.id, {
+      action: 'REJECT',
+      rejectReason: 'Team is short-staffed',
+    });
 
-    expect(sendLeaveDecisionEmail).toHaveBeenCalledWith(
-      'someone@example.test',
-      'APPROVED',
-      expect.objectContaining({ totalDays: 2 }),
-    );
+    const notification = await prisma.notification.findFirstOrThrow({
+      where: { recipientId: user.id },
+    });
+    expect(notification).toMatchObject({
+      type: 'LEAVE_DECIDED',
+      entityType: 'LEAVE_REQUEST',
+      entityId: request.id,
+      groupKey: null,
+    });
+    expect(notification.payload).toMatchObject({
+      status: 'REJECTED',
+      rejectReason: 'Team is short-staffed',
+      totalDays: 2,
+    });
   });
 
-  it('skips the decision email when the employee has no address on file', async () => {
+  it('skips the decision notification when the employee has no account', async () => {
     const hr = await createUser({ roleName: 'HR' });
-    const employee = await createEmployee({ email: null });
+    const employee = await createEmployee();
     const request = await createLeaveRequest({
       employeeId: employee.id,
       startDate: '2026-07-06',
@@ -546,7 +567,113 @@ describe('reviewLeave', () => {
     });
 
     await leaveService.reviewLeave(request.id, hr.id, { action: 'APPROVE', rejectReason: null });
-    expect(sendLeaveDecisionEmail).not.toHaveBeenCalled();
+    await expect(prisma.notification.count()).resolves.toBe(0);
+  });
+
+  it("marks HR's submitted notifications resolved once a decision is made", async () => {
+    const hr = await createUser({ roleName: 'HR' });
+    const { user } = await fullTimerWithThreeAccrualDays();
+    const created = await leaveService.submitLeave(authUser(user), {
+      type: 'SICK',
+      startDate: utc('2026-07-06'),
+      endDate: utc('2026-07-07'),
+      reason: null,
+    });
+
+    await leaveService.reviewLeave(created.id, hr.id, { action: 'APPROVE', rejectReason: null });
+
+    const hrNotification = await prisma.notification.findFirstOrThrow({
+      where: { recipientId: hr.id, type: 'LEAVE_SUBMITTED' },
+    });
+    expect(hrNotification.resolvedById).toBe(hr.id);
+    expect(hrNotification.resolvedAt).not.toBeNull();
+    expect(hrNotification.readAt).not.toBeNull();
+  });
+});
+
+describe('reviewLeave — two reviewers racing', () => {
+  // Both calls issue their pre-read before either opens its transaction, so both pass the
+  // "is it PENDING?" check. The conditional update inside the transaction is what decides.
+  async function raceApprovals(requestId: number, first: number, second: number) {
+    return Promise.allSettled([
+      leaveService.reviewLeave(requestId, first, { action: 'APPROVE', rejectReason: null }),
+      leaveService.reviewLeave(requestId, second, { action: 'APPROVE', rejectReason: null }),
+    ]);
+  }
+
+  it('lets exactly one reviewer win and 409s the other', async () => {
+    const hrOne = await createUser({ roleName: 'HR' });
+    const hrTwo = await createUser({ roleName: 'HR' });
+    const { employee } = await createEmployeeWithUser();
+    const request = await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-07-06',
+      endDate: '2026-07-07',
+      totalDays: 2,
+      type: 'SICK',
+    });
+
+    const results = await raceApprovals(request.id, hrOne.id, hrTwo.id);
+
+    const winners = results.filter((result) => result.status === 'fulfilled');
+    const losers = results.filter((result) => result.status === 'rejected');
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(1);
+    expect((losers[0] as PromiseRejectedResult).reason).toMatchObject({ status: 409 });
+
+    const stored = await prisma.leaveRequest.findUniqueOrThrow({ where: { id: request.id } });
+    expect(stored.status).toBe('APPROVED');
+    // The stored reviewer is whichever call actually committed.
+    expect([hrOne.id, hrTwo.id]).toContain(stored.reviewedById);
+  });
+
+  it('consumes the paid-leave balance exactly once', async () => {
+    const hrOne = await createUser({ roleName: 'HR' });
+    const hrTwo = await createUser({ roleName: 'HR' });
+    const { employee } = await createEmployeeWithUser();
+    // Deliberately roomy: 4 days available against a 2-day request, so a double
+    // consumption would land at 4 rather than being masked by the CHECK constraint.
+    await createAccrual({
+      employeeId: employee.id,
+      period: '2026-01-01',
+      expiresAt: '2027-07-01',
+      days: 4,
+    });
+    const request = await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-07-06',
+      endDate: '2026-07-07',
+      totalDays: 2,
+      type: 'PAID',
+    });
+
+    await raceApprovals(request.id, hrOne.id, hrTwo.id);
+
+    const consumed = await prisma.leaveAccrual.aggregate({
+      where: { employeeId: employee.id },
+      _sum: { daysConsumed: true },
+    });
+    expect(Number(consumed._sum.daysConsumed)).toBe(2);
+  });
+
+  it('notifies the employee exactly once', async () => {
+    const hrOne = await createUser({ roleName: 'HR' });
+    const hrTwo = await createUser({ roleName: 'HR' });
+    const { employee, user } = await createEmployeeWithUser();
+    const request = await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-07-06',
+      endDate: '2026-07-07',
+      totalDays: 2,
+      type: 'SICK',
+    });
+
+    await raceApprovals(request.id, hrOne.id, hrTwo.id);
+
+    const notifications = await prisma.notification.findMany({
+      where: { recipientId: user.id, type: 'LEAVE_DECIDED' },
+    });
+    expect(notifications).toHaveLength(1);
   });
 });
 

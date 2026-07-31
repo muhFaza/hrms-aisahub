@@ -37,6 +37,17 @@ enum PayrollStatus {
   FINALIZED
 }
 
+enum NotificationType {
+  LEAVE_SUBMITTED
+  LEAVE_DECIDED
+  OVERTIME_SUBMITTED
+  OVERTIME_DECIDED
+  REIMBURSEMENT_SUBMITTED
+  REIMBURSEMENT_DECIDED
+  PAYSLIP_AVAILABLE
+  REQUEST_CANCELLED
+}
+
 model Role {
   id    Int    @id @default(autoincrement())
   name  String @unique // HR | EMPLOYEE
@@ -59,6 +70,8 @@ model User {
   reviewedOvertime        Overtime[]      @relation("OvertimeReviewer")
   reviewedReimbursements  Reimbursement[] @relation("ReimbursementReviewer")
   finalizedPayrollPeriods PayrollPeriod[] @relation("PayrollFinalizer")
+  notifications           Notification[]  @relation("NotificationRecipient")
+  resolvedNotifications   Notification[]  @relation("NotificationResolver")
 }
 
 model Employee {
@@ -215,8 +228,30 @@ model Payslip {
   totalIdr           Decimal       @db.Decimal(15, 2)
   totalUsd           Decimal       @db.Decimal(15, 2)
   detail             Json? // full computation breakdown snapshot
-  emailSentAt        DateTime?
   createdAt          DateTime      @default(now())
 
   @@unique([payrollPeriodId, employeeId])
+}
+
+// In-app notification. entityId is deliberately NOT a foreign key: cancelling a
+// request hard-deletes the row, and the "this was cancelled" notification has to
+// outlive the record it describes.
+model Notification {
+  id           Int              @id @default(autoincrement())
+  recipientId  Int
+  recipient    User             @relation("NotificationRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  type         NotificationType
+  entityType   String
+  entityId     Int
+  payload      Json
+  groupKey     String? // "<ENTITY>:<id>" — ties an HR fan-out together so acting on one resolves all
+  readAt       DateTime?
+  resolvedAt   DateTime?
+  resolvedById Int?
+  resolvedBy   User?            @relation("NotificationResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime         @default(now())
+
+  @@index([recipientId, readAt])
+  @@index([recipientId, createdAt])
+  @@index([groupKey])
 }

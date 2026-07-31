@@ -18,6 +18,7 @@ import {
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext';
 import LogoMark from '../components/LogoMark';
+import NotificationBell from '../components/NotificationBell';
 
 const { Header, Sider, Content } = Layout;
 
@@ -222,6 +223,7 @@ export default function AppLayout() {
             onClick={() => setCollapsed((value) => !value)}
           />
           <Space size={12}>
+            <NotificationBell />
             <Tag color={roleTagColor} style={{ marginInlineEnd: 0 }}>
               {user?.roleName}
             </Tag>

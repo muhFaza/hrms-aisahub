@@ -6,7 +6,7 @@ import type { AuthUser } from '../../middleware/auth';
 import { countWorkingDays } from '../../lib/workingDays';
 import { ensureAccrualsUpToDate, getBalanceBreakdown, planFifoAllocation } from '../../lib/accrual';
 import { assertPeriodEditable } from '../../lib/periodLock';
-import { sendLeaveDecisionEmail, sendLeaveSubmittedEmail } from '../../lib/email';
+import { emitToEmployee, emitToHr, resolveGroup } from '../notifications/emit';
 import type { CreateLeaveInput, ListLeaveQuery, ReviewLeaveInput } from './schemas';
 
 const requestInclude = Prisma.validator<Prisma.LeaveRequestInclude>()({
@@ -37,6 +37,11 @@ function serializeRequest(request: RequestRow) {
 // Normalize to UTC midnight so working-day counting and holiday keys line up.
 function toUtcDate(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+// Notification payloads carry calendar days as ISO date strings.
+function isoDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }
 
 export async function listLeave(query: ListLeaveQuery, actor: AuthUser) {
@@ -119,26 +124,34 @@ export async function submitLeave(actor: AuthUser, input: CreateLeaveInput) {
     }
   }
 
-  const created = await prisma.leaveRequest.create({
-    data: {
-      employeeId: employee.id,
-      type: input.type,
-      startDate,
-      endDate,
-      totalDays,
-      reason: input.reason ?? null,
-    },
-    include: requestInclude,
-  });
+  // One transaction: the request and the HR notifications land together or not at all.
+  const created = await prisma.$transaction(async (tx) => {
+    const request = await tx.leaveRequest.create({
+      data: {
+        employeeId: employee.id,
+        type: input.type,
+        startDate,
+        endDate,
+        totalDays,
+        reason: input.reason ?? null,
+      },
+      include: requestInclude,
+    });
 
-  // Fire-and-forget HR notification; failures are caught inside the email helper.
-  void sendLeaveSubmittedEmail({
-    employeeName: employee.fullName,
-    type: created.type,
-    startDate: created.startDate,
-    endDate: created.endDate,
-    totalDays: Number(created.totalDays),
-    reason: created.reason,
+    await emitToHr(tx, {
+      type: 'LEAVE_SUBMITTED',
+      entityType: 'LEAVE_REQUEST',
+      entityId: request.id,
+      payload: {
+        employeeName: employee.fullName,
+        leaveType: request.type,
+        startDate: isoDate(request.startDate),
+        endDate: isoDate(request.endDate),
+        totalDays: Number(request.totalDays),
+      },
+    });
+
+    return request;
   });
 
   return serializeRequest(created);
@@ -199,45 +212,60 @@ export async function reviewLeave(id: number, reviewerUserId: number, input: Rev
   const reviewedAt = new Date();
 
   const updated = await prisma.$transaction(async (tx) => {
-    if (input.action === 'APPROVE') {
-      if (request.type === 'PAID') {
-        await consumePaidLeave(tx, request.employeeId, Number(request.totalDays));
-      }
-      return tx.leaveRequest.update({
-        where: { id },
-        data: { status: 'APPROVED', reviewedById: reviewerUserId, reviewedAt },
-        include: requestInclude,
-      });
+    // Claim the request by transitioning it conditionally: `status: 'PENDING'` in the
+    // WHERE is the guard. Two reviewers racing each other both pass the check above, but
+    // the second update matches no row and loses. Everything with a side effect —
+    // consuming balance, notifying — happens only after this succeeds.
+    const claimed = await tx.leaveRequest.updateMany({
+      where: { id, status: 'PENDING' },
+      data:
+        input.action === 'APPROVE'
+          ? { status: 'APPROVED', reviewedById: reviewerUserId, reviewedAt }
+          : {
+              status: 'REJECTED',
+              reviewedById: reviewerUserId,
+              reviewedAt,
+              rejectReason: input.rejectReason ?? null,
+            },
+    });
+    if (claimed.count === 0) {
+      throw new HttpError(409, 'This request was already reviewed by someone else');
     }
-    return tx.leaveRequest.update({
+
+    if (input.action === 'APPROVE' && request.type === 'PAID') {
+      await consumePaidLeave(tx, request.employeeId, Number(request.totalDays));
+    }
+
+    const decided = await tx.leaveRequest.findUniqueOrThrow({
       where: { id },
-      data: {
-        status: 'REJECTED',
-        reviewedById: reviewerUserId,
-        reviewedAt,
-        rejectReason: input.rejectReason ?? null,
-      },
       include: requestInclude,
     });
-  });
 
-  if (updated.employee?.email) {
-    void sendLeaveDecisionEmail(updated.employee.email, updated.status as 'APPROVED' | 'REJECTED', {
-      employeeName: updated.employee.fullName,
-      type: updated.type,
-      startDate: updated.startDate,
-      endDate: updated.endDate,
-      totalDays: Number(updated.totalDays),
-      reason: updated.reason,
-      rejectReason: updated.rejectReason,
+    // The request is no longer pending, so every HR copy of it stops asking to be acted on.
+    await resolveGroup(tx, 'LEAVE_REQUEST', id, reviewerUserId);
+
+    await emitToEmployee(tx, decided.employeeId, {
+      type: 'LEAVE_DECIDED',
+      entityType: 'LEAVE_REQUEST',
+      entityId: decided.id,
+      payload: {
+        status: decided.status,
+        leaveType: decided.type,
+        startDate: isoDate(decided.startDate),
+        endDate: isoDate(decided.endDate),
+        totalDays: Number(decided.totalDays),
+        rejectReason: decided.rejectReason,
+      },
     });
-  }
+
+    return decided;
+  });
 
   return serializeRequest(updated);
 }
 
 export async function cancelLeave(id: number, actor: AuthUser) {
-  const request = await prisma.leaveRequest.findUnique({ where: { id } });
+  const request = await prisma.leaveRequest.findUnique({ where: { id }, include: requestInclude });
   if (!request) {
     throw new HttpError(404, 'Leave request not found');
   }
@@ -248,7 +276,21 @@ export async function cancelLeave(id: number, actor: AuthUser) {
     throw new HttpError(400, 'Only pending requests can be cancelled');
   }
   await assertPeriodEditable(request.startDate);
-  await prisma.leaveRequest.delete({ where: { id } });
+
+  await prisma.$transaction(async (tx) => {
+    const resolved = await resolveGroup(tx, 'LEAVE_REQUEST', id, actor.userId);
+    await tx.leaveRequest.delete({ where: { id } });
+
+    // Only worth telling HR about a request they were actually shown.
+    if (resolved > 0) {
+      await emitToHr(tx, {
+        type: 'REQUEST_CANCELLED',
+        entityType: 'LEAVE_REQUEST',
+        entityId: id,
+        payload: { employeeName: request.employee?.fullName ?? null, kind: 'LEAVE' },
+      });
+    }
+  });
 }
 
 export async function getBalance(employeeId: number) {
