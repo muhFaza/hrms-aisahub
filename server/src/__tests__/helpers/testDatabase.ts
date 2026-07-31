@@ -9,8 +9,21 @@ export function resolveTestDatabaseUrl(): string {
   // so read it here too. dotenv never overwrites an already-set variable.
   dotenv.config();
 
+  // An explicit TEST_DATABASE_URL used to be trusted blindly, which made it the one way
+  // to aim the suite at a real database: point it at `hrms` and the truncation between
+  // tests wipes development data. Hold it to the same `_test` suffix the derived path
+  // enforces — a typo in the override now fails loudly instead of destructively.
   const explicit = process.env.TEST_DATABASE_URL;
-  if (explicit) return explicit;
+  if (explicit) {
+    const explicitName = new URL(explicit).pathname.replace(/^\//, '');
+    if (!explicitName.endsWith('_test')) {
+      throw new Error(
+        `TEST_DATABASE_URL points at "${explicitName}", which does not end in "_test". ` +
+          'Refusing to run: the suite truncates every table between tests.',
+      );
+    }
+    return explicit;
+  }
 
   const base = process.env.DATABASE_URL;
   if (!base) {

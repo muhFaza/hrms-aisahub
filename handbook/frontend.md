@@ -140,8 +140,9 @@ page. DRAFT shows an editable rate, **Save rate**, **Delete** and **Finalize**; 
 replaces them with a lock line. Every payslip row expands into a plain-language breakdown.
 The finalize confirmation spells out all three consequences and that it cannot be undone.
 
-**Payslips** — period, IDR total, USD total, and whether the email was **Sent** or
-**Not sent**, with the same expandable breakdown.
+**Payslips** — period, IDR total, USD total, with the same expandable breakdown. There is
+no delivery column: a finalized payslip announces itself through a `PAYSLIP_AVAILABLE`
+notification in the bell.
 
 ---
 

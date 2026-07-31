@@ -78,9 +78,13 @@ modules/<domain>/
   schemas.ts      Zod input schemas
 ```
 
-Ten modules: `auth`, `users`, `employees`, `holidays`, `leave`, `daily-logs`, `overtime`,
-`reimbursements`, `payroll`, `dashboard`. (`dashboard` has no `schemas.ts` — it takes no
-input.) Full endpoint list in [api-reference.md](api-reference.md).
+Eleven modules: `auth`, `users`, `employees`, `holidays`, `leave`, `daily-logs`, `overtime`,
+`reimbursements`, `payroll`, `dashboard`, `notifications`. (`dashboard` has no `schemas.ts`
+— it takes no input.) Full endpoint list in [api-reference.md](api-reference.md).
+
+`notifications` carries a fifth file, `emit.ts`: the write side, called by the other
+modules rather than by a route. Nothing creates a notification over HTTP — they originate
+only from domain events.
 
 **Adding a domain?** Copy the shape. Mount the router behind `authenticate` in `app.ts`,
 register static routes before parameterized ones (`/leave/balance` must precede
@@ -98,8 +102,11 @@ register static routes before parameterized ones (`/leave/balance` must precede
 | `accrual.ts` | Leave accrual: pure maths (`computeBalance`, `planFifoAllocation`) plus the database-touching `ensureAccrualsUpToDate` / `getBalanceBreakdown` |
 | `payroll.ts` | `computePayslipRow` — deliberately database-free |
 | `periodLock.ts` | `assertPeriodEditable(date)` — throws 409 if that month's payroll is finalized |
-| `email.ts` | Three templates. `sendMail` never throws; SMTP failures only log |
 | `fx.ts` | The one external HTTP call — USD→IDR, 5s timeout, returns `null` on every failure mode |
+
+Notification emission is deliberately **not** here: it reads the HR recipient list and
+writes rows, so it lives in `modules/notifications/emit.ts` rather than break the
+database-free rule.
 
 `periodLock` is worth internalising: it is called from leave review/cancel, daily-log
 create/update/delete, overtime create/review/cancel and reimbursement
@@ -134,7 +141,12 @@ create/review/cancel. Finalizing a payroll month freezes every record dated in i
 - **Money is `Decimal` in the database**, converted to `number` in services for JSON.
 - **Dates that mean "a calendar day" are written at UTC midnight**, always. This is the
   single most common source of bugs here — see [data-model.md](data-model.md#gotchas).
-- **Emails are fire-and-forget.** Nothing in a request path awaits SMTP.
+- **Notifications are awaited inside the transaction that causes them.** The opposite of
+  the fire-and-forget rule the SMTP emails followed, and for the reason that rule existed:
+  a notification is an `INSERT` on a connection the request already holds, not a call to a
+  slow external service. Writing it in the same transaction as the state change means an
+  approved leave request can never exist without its notification, and a rolled-back review
+  leaves no orphan. Every `emit*` helper takes the transaction client as its first argument.
 - **Soft delete over hard delete** for employees and users (`isActive`).
 
 ---

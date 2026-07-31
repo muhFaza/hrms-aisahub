@@ -18,9 +18,9 @@ in the leave and payroll paths as a higher bar than elsewhere.
 
 ```
 server/     Express + Prisma API (port 5000)
-  src/config      env, prisma client, mailer
+  src/config      env, prisma client
   src/middleware  auth, rbac, validate, errorHandler, upload
-  src/lib         pure logic — workingDays, accrual, payroll, periodLock, fx, email
+  src/lib         pure logic — workingDays, accrual, payroll, periodLock, fx
   src/modules     one folder per domain: routes / controller / service / schemas
   prisma          schema.prisma, migrations, seed.ts
 client/     React 18 + Vite + Ant Design SPA (port 5173)
@@ -50,6 +50,7 @@ There is no standalone typecheck script — `pnpm build` is the typecheck.
 | --- | --- |
 | Anything touching leave or payroll | [handbook/domain-rules.md](handbook/domain-rules.md) |
 | Anything touching auth, roles, or user accounts | [handbook/auth-and-roles.md](handbook/auth-and-roles.md) |
+| Anything touching notifications | [handbook/notifications.md](handbook/notifications.md) |
 | Schema or migration work | [handbook/data-model.md](handbook/data-model.md) |
 | Adding an endpoint | [handbook/architecture.md](handbook/architecture.md), [handbook/api-reference.md](handbook/api-reference.md) |
 | Adding a test | [handbook/testing.md](handbook/testing.md) |
@@ -89,7 +90,10 @@ unit-testable.
 - Pagination is uniformly `page` / `pageSize` (default 20, max 100).
 - Errors are thrown as `HttpError(status, message)` and mapped centrally.
 - Money is `Decimal` in the database, `number` in JSON responses.
-- Emails are fire-and-forget; nothing in a request path awaits SMTP.
+- Notifications are awaited *inside* the transaction that causes them. There is no email
+  in this system. An `INSERT` on a connection the request already holds belongs in the same
+  transaction as the state change — unlike an SMTP call, it is neither slow nor external —
+  so an approved request can never exist without its notification.
 - Employees and users are deactivated, never deleted.
 - Register static routes before parameterized ones (`/leave/balance` before `/leave/:id`).
 
@@ -116,6 +120,10 @@ without raising an error.
 
 Reassign those four columns first. `prisma/migrations/20260730120000_remove_seeded_owner_account`
 is the reference implementation.
+
+`Notification.recipientId` is the one `User` foreign key that cascades, deliberately: a
+notification is a delivery record for one person, not audit trail, so it dies with the
+account and needs no reassignment. (`Notification.resolvedById` is `SET NULL`.)
 
 ## Things that look wrong but are intentional
 

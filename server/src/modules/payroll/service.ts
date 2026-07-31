@@ -3,7 +3,7 @@ import { prisma } from '../../config/prisma';
 import { HttpError } from '../../lib/httpError';
 import type { AuthUser } from '../../middleware/auth';
 import { fetchUsdToIdrRate } from '../../lib/fx';
-import { sendPayslipEmail } from '../../lib/email';
+import { emitToEmployees, type EmployeeTarget } from '../notifications/emit';
 import {
   computePayslipRow,
   type ComputeContext,
@@ -268,10 +268,12 @@ export async function finalizePeriod(id: number, finalizerUserId: number) {
   const exchangeRate = Number(period.exchangeRate);
   const rows = await computeRows(exchangeRate, period.year, period.month);
 
-  // One transaction: snapshot every payslip then flip the period to FINALIZED (locks the month).
+  // One transaction: snapshot every payslip, notify its owner, then flip the period to
+  // FINALIZED (locks the month).
   await prisma.$transaction(async (tx) => {
+    const targets: EmployeeTarget[] = [];
     for (const row of rows) {
-      await tx.payslip.create({
+      const payslip = await tx.payslip.create({
         data: {
           payrollPeriodId: id,
           employeeId: row.employeeId,
@@ -284,15 +286,28 @@ export async function finalizePeriod(id: number, finalizerUserId: number) {
           detail: row.detail as unknown as Prisma.InputJsonValue,
         },
       });
+      targets.push({
+        employeeId: row.employeeId,
+        entityId: payslip.id,
+        payload: {
+          year: period.year,
+          month: period.month,
+          totalIdr: row.totalIdr,
+          totalUsd: row.totalUsd,
+        },
+      });
     }
+    // One lookup and one insert for the whole run, not a pair per employee.
+    await emitToEmployees(tx, {
+      type: 'PAYSLIP_AVAILABLE',
+      entityType: 'PAYSLIP',
+      targets,
+    });
     await tx.payrollPeriod.update({
       where: { id },
       data: { status: 'FINALIZED', finalizedAt: new Date(), finalizedById: finalizerUserId },
     });
   });
-
-  // After commit: fire-and-forget payslip emails; stamp emailSentAt only on success.
-  void dispatchPayslipEmails(id, period.year, period.month, exchangeRate);
 
   const finalized = await prisma.payrollPeriod.findUnique({
     where: { id },
@@ -309,43 +324,6 @@ export async function finalizePeriod(id: number, finalizerUserId: number) {
     rows: finalizedRows,
     totals: totalsOf(finalizedRows),
   };
-}
-
-// Sends each employee their payslip email; on success marks emailSentAt (non-blocking).
-async function dispatchPayslipEmails(
-  periodId: number,
-  year: number,
-  month: number,
-  exchangeRate: number,
-): Promise<void> {
-  const payslips = await prisma.payslip.findMany({
-    where: { payrollPeriodId: periodId },
-    include: { employee: { select: { fullName: true, email: true } } },
-  });
-  for (const payslip of payslips) {
-    const detail = payslip.detail as unknown as PayslipDetail | null;
-    const email = payslip.employee.email;
-    if (!email) continue;
-    const ok = await sendPayslipEmail(email, {
-      employeeName: payslip.employee.fullName,
-      year,
-      month,
-      employmentType: (detail?.employmentType ?? 'FULL_TIME') as 'FULL_TIME' | 'PART_TIME',
-      basicSalary: Number(payslip.basicSalary),
-      overtimePay: Number(payslip.overtimePay),
-      reimbursementTotal: Number(payslip.reimbursementTotal),
-      leaveDeduction: Number(payslip.leaveDeduction),
-      totalIdr: Number(payslip.totalIdr),
-      totalUsd: Number(payslip.totalUsd),
-      exchangeRate,
-      overtimeHours: detail?.overtimeHours ?? 0,
-      dailyLogHours: detail?.dailyLogHours ?? 0,
-      sickDays: detail?.sickDays ?? 0,
-    });
-    if (ok) {
-      await prisma.payslip.update({ where: { id: payslip.id }, data: { emailSentAt: new Date() } });
-    }
-  }
 }
 
 export async function getMyPayslips(actor: AuthUser) {
@@ -371,6 +349,5 @@ export async function getMyPayslips(actor: AuthUser) {
     totalIdr: Number(payslip.totalIdr),
     totalUsd: Number(payslip.totalUsd),
     detail: payslip.detail as unknown as PayslipDetail,
-    emailSentAt: payslip.emailSentAt,
   }));
 }

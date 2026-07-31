@@ -117,10 +117,11 @@ is **ignored, not honoured**. HR calling the single-employee balance endpoint mu
 employee. The leave *calendar*, though, is company-wide for both roles — everyone can see
 who is off.
 
-### Email
+### Notification
 
-On submission, every active HR account is notified. On decision, the employee is notified,
-silently skipped if there is no address on file. Both are fire-and-forget.
+On submission every active HR account is notified; on decision the requester is, and the
+HR copies are marked resolved. Both are written in the same transaction as the change
+itself — see [Notifications](#notifications) below.
 
 ---
 
@@ -137,9 +138,10 @@ One period per calendar `(year, month)`, unique. All period administration is HR
 | Deletable | Yes | No |
 | Payslips exist | No | Yes |
 
-**Finalizing is irreversible.** There is no un-finalize endpoint. In one transaction it
-writes a payslip per employee and flips the status, then dispatches payslip emails
-fire-and-forget, stamping `emailSentAt` only on success.
+**Finalizing is irreversible.** There is no un-finalize endpoint. One transaction writes a
+payslip per employee, notifies each of them (one batched insert, not one per employee) and
+flips the status. Nothing is dispatched afterwards — if the transaction rolls back, no
+employee was told anything.
 
 ### The month lock
 
@@ -278,6 +280,36 @@ Other rules:
 
 ---
 
+## Notifications
+
+In-app only. There is no email anywhere in the system — no SMTP, no nodemailer, no
+`Payslip.emailSentAt`. Every notification is delivered through the bell in the app header.
+
+Eight events, and no others:
+
+| Recipient | Event | Emitted from |
+| --- | --- | --- |
+| HR | `LEAVE_SUBMITTED` | `submitLeave` |
+| HR | `OVERTIME_SUBMITTED` | `createOvertime` |
+| HR | `REIMBURSEMENT_SUBMITTED` | `createReimbursement` |
+| HR | `REQUEST_CANCELLED` | `cancelLeave`, `cancelOvertime`, `cancelReimbursement` |
+| Employee | `LEAVE_DECIDED` | `reviewLeave` |
+| Employee | `OVERTIME_DECIDED` | `reviewOvertime` |
+| Employee | `REIMBURSEMENT_DECIDED` | `reviewReimbursement` |
+| Employee | `PAYSLIP_AVAILABLE` | `finalizePeriod` |
+
+Daily-log submissions, accrual credits and user-creation are deliberately silent.
+
+**Emission happens inside the transaction that causes it**, so a rolled-back decision
+leaves no notification behind. The three `*_SUBMITTED` events fan out to every active HR
+account and resolve together the moment one of them acts.
+
+The mechanics — group keys, auto-resolve, payload shapes, why `entityId` is not a foreign
+key, and what is deliberately not notified — live in
+[notifications.md](notifications.md). Read it before adding an emission site.
+
+---
+
 ## Employee lifecycle
 
 **Employment type** is the single switch governing paid leave, overtime, daily logs,
@@ -355,7 +387,7 @@ The design document is `docs/plans/2026-07-08-hrms-design.md`. These are recorde
    paid leave permanently burns the balance.
 
 2. **The Owner account is gone.** The design still references `OWNER_EMAIL` and "HR + Owner"
-   notification. There is no such config, the mailer notifies active HR accounts, and a
+   notification. There is no such config, notifications go to active HR accounts, and a
    migration removed the seeded owner. **The document is stale, not the code.**
 
 3. **Accrual grants a day for the join month and the current incomplete month**, contradicting

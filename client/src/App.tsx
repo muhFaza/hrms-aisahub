@@ -19,6 +19,7 @@ import PayrollPage from './pages/payroll/PayrollPage';
 import PayrollPeriodDetailPage from './pages/payroll/PayrollPeriodDetailPage';
 import MyPayslipsPage from './pages/payroll/MyPayslipsPage';
 import UsersPage from './pages/users/UsersPage';
+import NotificationsPage from './pages/notifications/NotificationsPage';
 
 export default function App() {
   return (
@@ -34,6 +35,8 @@ export default function App() {
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
+        {/* Notifications are per-user, so both roles get the same page. */}
+        <Route path="/notifications" element={<NotificationsPage />} />
 
         {/* HR-only modules; employees hitting these get a 403 result page. */}
         <Route

@@ -1,5 +1,5 @@
 import request from 'supertest';
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { app } from '../../../app';
 import { prisma } from '../../../config/prisma';
 import {
@@ -10,11 +10,6 @@ import {
   resetDb,
   signToken,
 } from '../../../__tests__/helpers/factories';
-
-vi.mock('../../../lib/email', () => ({
-  sendLeaveSubmittedEmail: vi.fn().mockResolvedValue(undefined),
-  sendLeaveDecisionEmail: vi.fn().mockResolvedValue(undefined),
-}));
 
 // Complements leave.service.test.ts: those tests call the service directly, so
 // they cannot catch a route that forgot requireRole('HR'). These go through the

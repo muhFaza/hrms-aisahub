@@ -6,5 +6,3 @@ import { resolveTestDatabaseUrl } from './testDatabase';
 process.env.DATABASE_URL = resolveTestDatabaseUrl();
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = process.env.JWT_SECRET ?? 'test-jwt-secret';
-// Keep Nodemailer from attempting a real connection if a suite forgets to mock it.
-process.env.SMTP_HOST = '';

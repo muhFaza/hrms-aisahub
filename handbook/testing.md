@@ -48,8 +48,10 @@ TEST_DATABASE_URL="postgresql://user:pass@localhost:5432/hrms_ci?schema=public" 
 | `testTimeout: 20000` | Database round-trips per test |
 | `hookTimeout: 60000` | The one-off `migrate deploy` runs inside a hook on a cold database |
 
-`setupEnv.ts` also forces `SMTP_HOST=''`, so a suite that forgets to mock the email module
-cannot open a real SMTP connection.
+`setupEnv.ts` used to force `SMTP_HOST=''` as a guard against a suite opening a real SMTP
+connection. That is gone with the email system: notifications are plain rows in the test
+database, so suites assert on `prisma.notification` directly and there is nothing left to
+mock.
 
 ---
 
@@ -177,9 +179,9 @@ afterEach(() => {
 **`toFake: ['Date']` is mandatory.** Faking `setTimeout`/`setInterval` too would stall
 Prisma's async I/O and the suite would hang.
 
-**6. Mock email** at the top level, before importing the module under test (`vi.mock` is
-hoisted). The factory must enumerate **every** export the code under test uses — a partial
-factory turns a missing one into `undefined is not a function`.
+**6. Assert notifications against the database**, not against a mock. Emission writes rows
+in the same transaction as the change, so `prisma.notification.findMany()` after the call
+is the whole assertion. Nothing needs stubbing.
 
 **7. Assert on state, not just status.** For route tests, add a database re-read proving
 nothing changed:
@@ -206,8 +208,10 @@ A 200 does not prove a field was rejected — Zod strips unknown keys silently.
 - **Employment type gates the fixtures.** A daily-log test needs `PART_TIME` or the service
   403s; overtime needs `FULL_TIME`. And `joinDate` drives how many accrual days exist — the
   leave suite sets `joinDate: utc('2026-05-10')` against a July "now" precisely to get 3.
-- **`email: null` versus omitted** on `createEmployee`: omitting gives a unique address,
-  explicit `null` gives none — the only way to hit the "skip the email" branch.
+- **`createEmployee` versus `createEmployeeWithUser`** decides whether anyone can be
+  notified. A bare `createEmployee` has no account, so employee-directed emission is a
+  silent no-op — that is the fixture for the "skips it" branch, and an accidental one in a
+  test that meant to assert a notification exists.
 - **Never re-enable parallelism** without giving each file its own database or schema.
 - **`RESTART IDENTITY` makes ids restart at 1**, so `id: 1` assertions *appear* to work.
   Don't rely on it — capture the returned row's id.

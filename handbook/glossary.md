@@ -86,6 +86,28 @@ The label on each period tells you where the rate came from: `API` (live), `FALL
 **Working days** — days that count as leave. Weekends and holidays are excluded. Asking for
 Friday through Monday over a normal weekend costs two days of balance, not four.
 
+**Notification** — a message in the app, shown under the bell in the top bar. There is no
+email in this system: when something happens that concerns you, it appears there and
+nowhere else. HR is told when someone submits or withdraws a request; an employee is told
+when a request is decided and when a new payslip is ready.
+
+**Unread** — a notification you have not opened yet. The number on the bell counts these.
+Opening one, or pressing "Mark all read", clears it. Nothing is ever deleted — read
+notifications stay in the list.
+
+**Fan-out** — one event producing a copy for several people. When an employee submits a
+leave request, every HR account gets its own notification, because any of them might be the
+one to deal with it.
+
+**Group key** — the label that ties those copies together, so the system knows they are all
+about the same request.
+
+**Resolved / handled** — what happens to the whole group the moment one HR person acts. If
+three HR accounts were told about a leave request and one approves it, all three
+notifications are marked handled and stop counting as unread — the other two are not being
+asked to do a job that is already done. The list shows them dimmed, with "Handled by" and
+the name of whoever did it.
+
 **Seed / seeding** — filling an empty database with sample data for demos and testing:
 five accounts, four employees, the 2026 Indonesian holiday calendar, and a handful of
 example requests. **Seeding erases everything in the database first.**
