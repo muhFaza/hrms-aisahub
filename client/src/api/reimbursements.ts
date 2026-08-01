@@ -9,8 +9,9 @@ export interface Reimbursement {
   employeeNickname: string | null;
   date: string;
   amount: number;
-  description: string | null;
-  evidenceFilePath: string | null;
+  // Both are required by the API and NOT NULL in the database; legacy rows carry ''.
+  description: string;
+  evidenceFilePath: string;
   status: RequestStatus;
   reviewedById: number | null;
   reviewedAt: string | null;

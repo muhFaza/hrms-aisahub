@@ -33,4 +33,11 @@ export const upload = multer({
   },
 });
 
+// Removes a stored upload from disk; missing files are ignored and failures never throw.
+export function removeUploadedFile(filename: string | null | undefined): void {
+  if (!filename) return;
+  const filePath = path.join(uploadDir, path.basename(filename));
+  fs.rm(filePath, { force: true }, () => undefined);
+}
+
 export { uploadDir };

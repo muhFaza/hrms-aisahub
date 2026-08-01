@@ -186,8 +186,8 @@ model Reimbursement {
   employee         Employee      @relation(fields: [employeeId], references: [id])
   date             DateTime      @db.Date
   amount           Decimal       @db.Decimal(15, 2) // IDR
-  description      String?
-  evidenceFilePath String?
+  description      String
+  evidenceFilePath String
   status           RequestStatus @default(PENDING)
   reviewedById     Int?
   reviewedBy       User?         @relation("ReimbursementReviewer", fields: [reviewedById], references: [id])

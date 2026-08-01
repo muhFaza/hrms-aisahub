@@ -47,7 +47,7 @@ export default function ReimbursementsReviewPage() {
 
   async function handleDownload(record: Reimbursement): Promise<void> {
     try {
-      await downloadEvidence(record.id, record.evidenceFilePath ?? `evidence-${record.id}`);
+      await downloadEvidence(record.id, record.evidenceFilePath || `evidence-${record.id}`);
     } catch {
       message.error('Failed to download evidence');
     }
@@ -68,7 +68,7 @@ export default function ReimbursementsReviewPage() {
     {
       title: 'Description',
       dataIndex: 'description',
-      render: (value: string | null) => value ?? '-',
+      render: (value: string) => value || '-',
     },
     {
       title: 'Evidence',

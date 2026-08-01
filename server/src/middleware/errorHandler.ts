@@ -2,18 +2,29 @@ import type { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
 import { Prisma } from '@prisma/client';
 import { HttpError } from '../lib/httpError';
+import { removeUploadedFile } from './upload';
 
 export function notFoundHandler(req: Request, res: Response): void {
   res.status(404).json({ error: 'Not Found', path: req.originalUrl });
 }
 
+// Multer writes to disk before validation and the service run, so any request that
+// ends up here left its upload orphaned. Only errored requests reach this handler,
+// so a successful create never loses its file.
+function discardOrphanedUploads(req: Request): void {
+  if (req.file) removeUploadedFile(req.file.filename);
+  if (!req.files) return;
+  // multer's array shape is a flat list; its fields shape is keyed by field name.
+  const groups = Array.isArray(req.files) ? [req.files] : Object.values(req.files);
+  for (const group of groups) {
+    for (const file of group) removeUploadedFile(file.filename);
+  }
+}
+
 // Central error handler: Zod → 400 with field details, known Prisma errors mapped, generic 500.
-export function errorHandler(
-  err: unknown,
-  _req: Request,
-  res: Response,
-  _next: NextFunction,
-): void {
+export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
+  discardOrphanedUploads(req);
+
   if (err instanceof ZodError) {
     res.status(400).json({
       error: 'Validation failed',
