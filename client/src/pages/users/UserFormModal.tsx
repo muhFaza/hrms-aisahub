@@ -111,6 +111,11 @@ export default function UserFormModal({
           name="password"
           label={isEdit ? 'Reset Password (optional)' : 'Password'}
           rules={isEdit ? [{ min: 6 }] : [{ required: true, min: 6 }]}
+          extra={
+            isEdit
+              ? 'A reset does not sign the user out on other devices — sessions already signed in stay valid until they expire. Deactivate the account to cut access off immediately.'
+              : undefined
+          }
         >
           <Input.Password placeholder={isEdit ? 'Leave blank to keep current' : ''} />
         </Form.Item>

@@ -41,6 +41,8 @@ function buildNavItems(
       { key: '/reimbursements', label: 'Reimbursements', icon: <DollarOutlined /> },
       { key: '/payroll', label: 'Payroll', icon: <BankOutlined /> },
       { key: '/users', label: 'Users', icon: <UserOutlined /> },
+      // HR has no employee profile, but this is also where every account changes its password.
+      { key: '/profile', label: 'Profile', icon: <SolutionOutlined /> },
     ];
   }
 

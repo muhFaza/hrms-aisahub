@@ -10,3 +10,8 @@ export async function me(req: Request, res: Response): Promise<void> {
   const user = await authService.getMe(req.user!.userId);
   res.json(user);
 }
+
+export async function changePassword(req: Request, res: Response): Promise<void> {
+  await authService.changePassword(req.user!.userId, req.body);
+  res.json({ success: true });
+}
