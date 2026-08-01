@@ -11,6 +11,7 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
@@ -67,6 +68,8 @@ export default function EmploymentHistoryCard({ employee }: { employee: Employee
 
   const isActive = employee.status === 'ACTIVE';
   const current = employee.employments[0] ?? null;
+  // Active AND already carrying an end date = serving out a notice period.
+  const onNotice = isActive && current?.endDate != null;
 
   function openTerminate(): void {
     terminateForm.resetFields();
@@ -121,12 +124,16 @@ export default function EmploymentHistoryCard({ employee }: { employee: Employee
     },
     {
       title: 'Status',
-      render: (_value, row) =>
-        row.endDate ? (
+      // Three states, not two: an end date that has not yet arrived is a notice period, and
+      // labelling it "Ended" contradicted the Active badge on the same page.
+      render: (_value, row) => {
+        if (!row.endDate) return <Tag color="green">Current</Tag>;
+        return dayjs(row.endDate).isBefore(dayjs(), 'day') ? (
           <Tag color="red">Ended</Tag>
         ) : (
-          <Tag color="green">Current</Tag>
-        ),
+          <Tag color="orange">Notice</Tag>
+        );
+      },
     },
     {
       title: 'Contract',
@@ -155,9 +162,19 @@ export default function EmploymentHistoryCard({ employee }: { employee: Employee
       title="Employment History"
       extra={
         isActive ? (
-          <Button danger onClick={openTerminate}>
-            End Employment
-          </Button>
+          // Already serving notice: the employment is closed, so terminating again returns
+          // 409. Say so rather than offering a button that only produces an error.
+          onNotice ? (
+            <Tooltip title="This employment already has an end date recorded.">
+              <Button danger disabled>
+                Notice served
+              </Button>
+            </Tooltip>
+          ) : (
+            <Button danger onClick={openTerminate}>
+              End Employment
+            </Button>
+          )
         ) : (
           <Button
             type="primary"
