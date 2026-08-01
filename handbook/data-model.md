@@ -201,13 +201,14 @@ does it automatically, and no `ON DELETE` variant preserves identity.
 `PENDING` → `APPROVED` or `REJECTED`. Only `APPROVED` rows count toward payroll. Leave used
 this enum until migration 7 removed its approval step; `DailyLog` never had a status.
 
-**`HolidayType`** — why a date is non-working. All four are treated identically by
-leave-day counting; the distinction is classification only.
-- `NATIONAL` — Indonesian statutory public holiday.
+**`HolidayType`** — what kind of day this is. The type decides whether it is worked, so it is
+not merely classification: `lib/workingDays.ts` treats three of the four as days off.
+- `NATIONAL` — Indonesian statutory public holiday. Day off.
+- `COMPANY` — a company-declared closure. Day off. **No seeded example.**
+- `SPECIAL` — one-off. Day off. **No seeded example.**
 - `JOINT_LEAVE` — *cuti bersama*, the government-mandated bridge days around Eid or Lunar
-  New Year.
-- `COMPANY` — a company-declared closure. **No seeded example.**
-- `SPECIAL` — one-off. **No seeded example.**
+  New Year. **A working day here** — employees work these, so leave taken across one consumes
+  it. The row exists so the calendar can show it.
 
 **`PayrollStatus`**
 - `DRAFT` — figures recomputed live on every read; exchange rate still editable; no

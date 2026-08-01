@@ -1,6 +1,6 @@
 import { prisma } from '../../config/prisma';
 import type { AuthUser } from '../../middleware/auth';
-import { countWorkingDays } from '../../lib/workingDays';
+import { countWorkingDays, offDayHolidayKeys } from '../../lib/workingDays';
 import { getBalanceBreakdown } from '../../lib/accrual';
 
 // Role-scoped dashboard aggregates (design §6). Read-only: gathers counts and short
@@ -85,13 +85,13 @@ export async function getHrDashboard() {
     }),
     prisma.holiday.findMany({
       where: { date: { gte: monthStart, lte: monthEnd } },
-      select: { date: true },
+      select: { date: true, type: true },
     }),
   ]);
 
-  // Leave days that actually fall within the current month (clip cross-month records,
-  // exclude weekends/holidays — same rule as the working-day counter).
-  const holidayKeys = monthHolidays.map((holiday) => holiday.date.toISOString().slice(0, 10));
+  // Leave days that actually fall within the current month (clip cross-month records, exclude
+  // weekends and off-day holidays — same rule as the working-day counter, joint leave included).
+  const holidayKeys = offDayHolidayKeys(monthHolidays);
   let leaveThisMonth = 0;
   for (const leave of monthLeaves) {
     const start = leave.startDate > monthStart ? leave.startDate : monthStart;

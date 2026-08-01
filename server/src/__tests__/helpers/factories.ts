@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import type { EmploymentType, LeaveType } from '@prisma/client';
+import type { EmploymentType, HolidayType, LeaveType } from '@prisma/client';
 import { prisma } from '../../config/prisma';
 import { env } from '../../config/env';
 import type { AuthUser } from '../../middleware/auth';
@@ -182,8 +182,14 @@ export async function createLeaveRequest(options: LeaveRequestOptions) {
   });
 }
 
-export async function createHoliday(date: string, name = 'Test Holiday') {
-  return prisma.holiday.create({ data: { name, date: utc(date), type: 'NATIONAL' } });
+// Defaults to NATIONAL, the type that actually suspends work. Pass 'JOINT_LEAVE' to model a
+// cuti bersama, which employees work through.
+export async function createHoliday(
+  date: string,
+  name = 'Test Holiday',
+  type: HolidayType = 'NATIONAL',
+) {
+  return prisma.holiday.create({ data: { name, date: utc(date), type } });
 }
 
 export async function finalizePeriod(year: number, month: number, finalizedById: number) {

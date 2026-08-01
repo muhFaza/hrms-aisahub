@@ -1,4 +1,4 @@
-import { splitLeaveDeduction, type PayslipDetail } from '../payroll';
+import { splitLeaveDeduction, type PayslipAttendance, type PayslipDetail } from '../payroll';
 import {
   COLORS,
   COMPANY,
@@ -8,9 +8,11 @@ import {
   drawField,
   drawFooters,
   drawHeader,
+  formatDateRange,
   formatIdr,
   formatPeriod,
   formatUsd,
+  periodBounds,
   type Doc,
 } from './theme';
 
@@ -81,6 +83,79 @@ function drawSection(doc: Doc, title: string, lines: Line[], y: number, width: n
   return cursor + 14;
 }
 
+// Attendance for the period, as a row of counts.
+//
+// Full-time reads as an explanation of where the month's weekdays went — scheduled, minus the
+// holidays and leave that came off it, leaves actual. Part-timers have no fixed schedule, so
+// they get the days they actually logged and the calendar context, without a scheduled figure
+// that would imply an obligation they do not have.
+//
+// Joint leave (cuti bersama) appears nowhere: those days are worked, so they sit inside
+// "actual" like any other working day.
+function drawAttendance(
+  doc: Doc,
+  attendance: PayslipAttendance,
+  isFullTime: boolean,
+  y: number,
+  width: number,
+): number {
+  const cells: { label: string; value: number }[] = isFullTime
+    ? [
+        { label: 'Actual working', value: attendance.actualWorkingDays },
+        { label: 'Scheduled working', value: attendance.scheduledWorkingDays },
+        { label: 'Leave taken', value: attendance.leaveDays },
+        { label: 'National holiday', value: attendance.nationalHolidayDays },
+        { label: 'Company holiday', value: attendance.companyHolidayDays },
+        { label: 'Day off', value: attendance.dayOffDays },
+      ]
+    : [
+        { label: 'Days logged', value: attendance.actualWorkingDays },
+        { label: 'National holiday', value: attendance.nationalHolidayDays },
+        { label: 'Company holiday', value: attendance.companyHolidayDays },
+        { label: 'Day off', value: attendance.dayOffDays },
+      ];
+
+  doc.font('Helvetica-Bold').fontSize(9).fillColor(COLORS.muted).text('ATTENDANCE', PAGE_MARGIN, y);
+  const top = y + 14;
+  doc.rect(PAGE_MARGIN, top, width, 40).fill(COLORS.band);
+
+  const cellWidth = width / cells.length;
+  cells.forEach((cell, index) => {
+    const x = PAGE_MARGIN + cellWidth * index;
+    doc
+      .font('Helvetica-Bold')
+      .fontSize(14)
+      .fillColor(COLORS.text)
+      .text(String(cell.value), x, top + 6, { width: cellWidth, align: 'center', lineBreak: false });
+    doc
+      .font('Helvetica')
+      .fontSize(7)
+      .fillColor(COLORS.muted)
+      .text(cell.label.toUpperCase(), x, top + 26, {
+        width: cellWidth,
+        align: 'center',
+        lineBreak: false,
+      });
+  });
+
+  doc.fillColor(COLORS.text);
+  if (isFullTime) {
+    doc
+      .font('Helvetica')
+      .fontSize(7)
+      .fillColor(COLORS.muted)
+      .text(
+        'Scheduled counts every weekday in the period; actual is what remains after holidays and ' +
+          'leave. Joint leave (cuti bersama) is a working day and is included in actual.',
+        PAGE_MARGIN,
+        top + 46,
+        { width },
+      );
+    return top + 66;
+  }
+  return top + 52;
+}
+
 export async function renderPayslip(data: PayslipData): Promise<Buffer> {
   const doc = createDocument('portrait');
   const width = doc.page.width - PAGE_MARGIN * 2;
@@ -101,16 +176,25 @@ export async function renderPayslip(data: PayslipData): Promise<Buffer> {
     fieldWidth,
   );
   y += 40;
-  drawField(doc, 'Pay period', formatPeriod(data.year, data.month), PAGE_MARGIN, y, fieldWidth);
+  // The attendance block's own bounds when present, so the two can never disagree; otherwise
+  // the month's calendar bounds.
+  const bounds = detail.attendance
+    ? { start: detail.attendance.periodStart, end: detail.attendance.periodEnd }
+    : periodBounds(data.year, data.month);
+  drawField(doc, 'Pay period', formatDateRange(bounds.start, bounds.end), PAGE_MARGIN, y, fieldWidth * 2);
   drawField(
     doc,
     'Exchange rate',
     `${formatIdr(detail.exchangeRate)} / USD 1.00`,
-    PAGE_MARGIN + fieldWidth,
+    PAGE_MARGIN + fieldWidth * 2,
     y,
-    fieldWidth * 2,
+    fieldWidth,
   );
   y += 46;
+
+  if (detail.attendance) {
+    y = drawAttendance(doc, detail.attendance, isFullTime, y, width);
+  }
 
   const earnings: Line[] = [];
   if (isFullTime) {

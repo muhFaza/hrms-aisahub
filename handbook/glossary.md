@@ -12,8 +12,9 @@ This page explains both in plain language. It exists mainly for
 
 **Cuti bersama** — literally "joint leave". Days the Indonesian government designates as
 collective days off, usually bridging a public holiday and a weekend around Eid or Lunar
-New Year. In this system they are holidays of type `JOINT_LEAVE`. For leave counting they
-behave exactly like any other holiday: a day off that does not consume anyone's balance.
+New Year. In this system they are holidays of type `JOINT_LEAVE` — and, unlike every other
+holiday type here, **they are working days**. Employees work them, so leave taken across a
+cuti bersama consumes that day and a sick day falling on one is deducted.
 
 **THR — Tunjangan Hari Raya** — a religious-holiday allowance that Indonesian employers are
 legally required to pay before a major religious holiday, typically equivalent to one

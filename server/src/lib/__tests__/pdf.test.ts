@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { PayslipDetail } from '../payroll';
 import { renderPayrollSheet, type PayrollSheetRow } from '../pdf/payrollSheet';
 import { renderPayslip } from '../pdf/payslip';
-import { formatIdr, formatUsd, periodKey } from '../pdf/theme';
+import {
+  formatDateKey,
+  formatDateRange,
+  formatIdr,
+  formatUsd,
+  periodBounds,
+  periodKey,
+} from '../pdf/theme';
 
 // Asserting on rendered glyph positions would pin the layout rather than the behaviour. These
 // check the contract that matters: a valid, non-empty PDF comes back and no input shape —
@@ -41,7 +48,19 @@ function sheet(rows: PayrollSheetRow[]) {
   };
 }
 
+const attendance = {
+  periodStart: '2026-06-01',
+  periodEnd: '2026-06-30',
+  scheduledWorkingDays: 22,
+  actualWorkingDays: 19,
+  dayOffDays: 8,
+  nationalHolidayDays: 1,
+  companyHolidayDays: 0,
+  leaveDays: 2,
+};
+
 const fullTimeDetail: PayslipDetail = {
+  attendance,
   employmentType: 'FULL_TIME',
   monthlySalary: 10_000_000,
   overtimeHours: 4,
@@ -183,6 +202,29 @@ describe('payslip PDF', () => {
     expectPdf(await renderPayslip(payslip(legacy, { leaveDeduction: 476_190 })));
   });
 
+  // The attendance block is optional: a payslip finalized before it existed has no such data,
+  // and the section is omitted rather than filled with invented numbers.
+  it('renders a payslip with no attendance block at all', async () => {
+    const noAttendance = { ...fullTimeDetail };
+    delete (noAttendance as Partial<PayslipDetail>).attendance;
+    const buffer = await renderPayslip(payslip(noAttendance));
+    expectPdf(buffer);
+    expect(pageCount(buffer)).toBe(1);
+  });
+
+  it('renders a part-time payslip whose attendance comes from logged days', async () => {
+    expectPdf(
+      await renderPayslip(
+        payslip({
+          ...fullTimeDetail,
+          employmentType: 'PART_TIME',
+          hourlyRate: 75_000,
+          attendance: { ...attendance, actualWorkingDays: 12, leaveDays: 0 },
+        }),
+      ),
+    );
+  });
+
   it('renders a payslip with no leave and no reimbursements', async () => {
     expectPdf(
       await renderPayslip(
@@ -219,5 +261,20 @@ describe('pdf formatting helpers', () => {
   it('zero-pads the period key', () => {
     expect(periodKey(2026, 6)).toBe('2026-06');
     expect(periodKey(2026, 12)).toBe('2026-12');
+  });
+
+  it('renders a date key without shifting it across a timezone boundary', () => {
+    expect(formatDateKey('2026-06-01')).toBe('01 Jun 2026');
+    expect(formatDateKey('2026-12-31')).toBe('31 Dec 2026');
+  });
+
+  it('renders the pay period as an inclusive ASCII range', () => {
+    expect(formatDateRange('2026-06-01', '2026-06-30')).toBe('01 Jun 2026 - 30 Jun 2026');
+  });
+
+  it('bounds a month at its first and last calendar day', () => {
+    expect(periodBounds(2026, 6)).toEqual({ start: '2026-06-01', end: '2026-06-30' });
+    expect(periodBounds(2026, 2)).toEqual({ start: '2026-02-01', end: '2026-02-28' });
+    expect(periodBounds(2024, 2)).toEqual({ start: '2024-02-01', end: '2024-02-29' });
   });
 });

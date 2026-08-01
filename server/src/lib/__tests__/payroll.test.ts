@@ -17,7 +17,7 @@ function baseContext(overrides: Partial<ComputeContext> = {}): ComputeContext {
     overtimes: [],
     dailyLogs: [],
     reimbursements: [],
-    deductibleLeaves: [],
+    leaves: [],
     holidays: [],
     exchangeRate: RATE,
     year: 2026,
@@ -101,7 +101,7 @@ describe('computePayslipRow — full-time', () => {
       fullTime,
       baseContext({
         // Jun 29 – Jul 2; only Jul 1 (Wed) and Jul 2 (Thu) fall in the period → 2 days.
-        deductibleLeaves: [
+        leaves: [
           {
             id: 7,
             type: 'SICK',
@@ -122,7 +122,7 @@ describe('computePayslipRow — full-time', () => {
       fullTime,
       baseContext({
         // Jul 6 (Mon) – Jul 8 (Wed) → 3 working days.
-        deductibleLeaves: [
+        leaves: [
           { id: 9, type: 'UNPAID', startDate: d('2026-07-06'), endDate: d('2026-07-08') },
         ],
       }),
@@ -141,10 +141,10 @@ describe('computePayslipRow — full-time', () => {
       baseContext({
         // Jul 3 (Fri) – Jul 8 (Wed): Sat 4 and Sun 5 drop out, Jul 6 is a holiday →
         // Jul 3, 7, 8 remain = 3 days.
-        deductibleLeaves: [
+        leaves: [
           { id: 1, type: 'UNPAID', startDate: d('2026-07-03'), endDate: d('2026-07-08') },
         ],
-        holidays: [d('2026-07-06')],
+        holidays: [{ date: d('2026-07-06'), type: 'NATIONAL' }],
       }),
     );
     expect(row.detail.unpaidDays).toBe(3);
@@ -155,7 +155,7 @@ describe('computePayslipRow — full-time', () => {
       fullTime,
       baseContext({
         // Jun 29 – Jul 2; only Jul 1 (Wed) and Jul 2 (Thu) fall in the period.
-        deductibleLeaves: [
+        leaves: [
           { id: 4, type: 'UNPAID', startDate: d('2026-06-29'), endDate: d('2026-07-02') },
         ],
       }),
@@ -168,7 +168,7 @@ describe('computePayslipRow — full-time', () => {
     const row = computePayslipRow(
       fullTime,
       baseContext({
-        deductibleLeaves: [
+        leaves: [
           // Jul 6 (Mon) – Jul 7 (Tue) → 2 sick days.
           { id: 1, type: 'SICK', startDate: d('2026-07-06'), endDate: d('2026-07-07') },
           // Jul 13 (Mon) – Jul 15 (Wed) → 3 unpaid days.
@@ -191,7 +191,7 @@ describe('computePayslipRow — full-time', () => {
     const row = computePayslipRow(
       fullTime,
       baseContext({
-        deductibleLeaves: [
+        leaves: [
           { id: 3, type: 'PAID', startDate: d('2026-07-06'), endDate: d('2026-07-08') },
         ],
       }),
@@ -236,7 +236,7 @@ describe('computePayslipRow — part-time', () => {
       partTime,
       baseContext({
         dailyLogs: [{ id: 1, date: d('2026-07-01'), hours: 8 }],
-        deductibleLeaves: [
+        leaves: [
           { id: 1, type: 'SICK', startDate: d('2026-07-06'), endDate: d('2026-07-07') },
           { id: 2, type: 'UNPAID', startDate: d('2026-07-13'), endDate: d('2026-07-15') },
         ],
@@ -296,5 +296,132 @@ describe('splitLeaveDeduction', () => {
     const split = splitLeaveDeduction({ sickDays: 0, unpaidDays: 0 }, 0);
     expect(Number.isNaN(split.sickDeduction)).toBe(false);
     expect(Number.isNaN(split.unpaidDeduction)).toBe(false);
+  });
+});
+
+// The policy: NATIONAL/COMPANY/SPECIAL are days off nobody is deducted for; JOINT_LEAVE is a
+// working day. Leave taken across a cuti bersama day therefore does deduct for it — before this
+// was enforced, those days were charged to nobody.
+describe('computePayslipRow — joint leave is a working day', () => {
+  it('deducts a sick day falling on a joint-leave day', () => {
+    const row = computePayslipRow(
+      fullTime,
+      baseContext({
+        // Mon 6th - Fri 10th, with Wed 8th a cuti bersama the employee was due to work.
+        leaves: [{ id: 1, type: 'SICK', startDate: d('2026-07-06'), endDate: d('2026-07-10') }],
+        holidays: [{ date: d('2026-07-08'), type: 'JOINT_LEAVE' }],
+      }),
+    );
+    expect(row.detail.sickDays).toBe(5);
+  });
+
+  it('does not deduct the same day when it is a national holiday instead', () => {
+    const row = computePayslipRow(
+      fullTime,
+      baseContext({
+        leaves: [{ id: 1, type: 'SICK', startDate: d('2026-07-06'), endDate: d('2026-07-10') }],
+        holidays: [{ date: d('2026-07-08'), type: 'NATIONAL' }],
+      }),
+    );
+    expect(row.detail.sickDays).toBe(4);
+  });
+
+  it.each(['COMPANY', 'SPECIAL'])('does not deduct a %s holiday either', (type) => {
+    const row = computePayslipRow(
+      fullTime,
+      baseContext({
+        leaves: [{ id: 1, type: 'SICK', startDate: d('2026-07-06'), endDate: d('2026-07-10') }],
+        holidays: [{ date: d('2026-07-08'), type }],
+      }),
+    );
+    expect(row.detail.sickDays).toBe(4);
+  });
+});
+
+describe('computePayslipRow — attendance summary', () => {
+  // July 2026: 31 days, 23 weekdays, 8 weekend days.
+  it('reconciles: scheduled = actual + holidays + leave, and calendar = scheduled + day off', () => {
+    const row = computePayslipRow(
+      fullTime,
+      baseContext({
+        leaves: [{ id: 1, type: 'SICK', startDate: d('2026-07-13'), endDate: d('2026-07-14') }],
+        holidays: [
+          { date: d('2026-07-08'), type: 'NATIONAL' },
+          { date: d('2026-07-09'), type: 'COMPANY' },
+          { date: d('2026-07-10'), type: 'JOINT_LEAVE' }, // worked, so absent from every line
+        ],
+      }),
+    );
+    const a = row.detail.attendance!;
+    expect(a).toMatchObject({
+      periodStart: '2026-07-01',
+      periodEnd: '2026-07-31',
+      scheduledWorkingDays: 23,
+      nationalHolidayDays: 1,
+      companyHolidayDays: 1,
+      leaveDays: 2,
+      actualWorkingDays: 19,
+      dayOffDays: 8,
+    });
+    expect(a.actualWorkingDays + a.nationalHolidayDays + a.companyHolidayDays + a.leaveDays).toBe(
+      a.scheduledWorkingDays,
+    );
+    expect(a.scheduledWorkingDays + a.dayOffDays).toBe(31);
+  });
+
+  it('counts PAID leave as absent even though it deducts nothing', () => {
+    const row = computePayslipRow(
+      fullTime,
+      baseContext({
+        leaves: [{ id: 1, type: 'PAID', startDate: d('2026-07-13'), endDate: d('2026-07-17') }],
+      }),
+    );
+    expect(row.leaveDeduction).toBe(0);
+    expect(row.detail.attendance?.leaveDays).toBe(5);
+    expect(row.detail.attendance?.actualWorkingDays).toBe(18);
+  });
+
+  it('folds SPECIAL in with company holidays', () => {
+    const row = computePayslipRow(
+      fullTime,
+      baseContext({
+        holidays: [
+          { date: d('2026-07-08'), type: 'COMPANY' },
+          { date: d('2026-07-09'), type: 'SPECIAL' },
+        ],
+      }),
+    );
+    expect(row.detail.attendance?.companyHolidayDays).toBe(2);
+    expect(row.detail.attendance?.nationalHolidayDays).toBe(0);
+  });
+
+  it('is a full month of working days when nothing happened', () => {
+    const row = computePayslipRow(fullTime, baseContext());
+    expect(row.detail.attendance).toMatchObject({
+      scheduledWorkingDays: 23,
+      actualWorkingDays: 23,
+      leaveDays: 0,
+      dayOffDays: 8,
+    });
+  });
+
+  // A part-timer has no fixed schedule, so actual is what they logged, not a residual.
+  it('counts a part-timer’s distinct logged dates, not a residual', () => {
+    const row = computePayslipRow(
+      partTime,
+      baseContext({
+        dailyLogs: [
+          { id: 1, date: d('2026-07-06'), hours: 4 },
+          { id: 2, date: d('2026-07-06'), hours: 4 }, // same day, two logs
+          { id: 3, date: d('2026-07-07'), hours: 8 },
+          { id: 4, date: d('2026-06-30'), hours: 8 }, // out of period
+        ],
+      }),
+    );
+    expect(row.detail.attendance).toMatchObject({
+      actualWorkingDays: 2,
+      leaveDays: 0,
+      dayOffDays: 8,
+    });
   });
 });

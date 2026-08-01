@@ -845,3 +845,56 @@ describe('listLeave', () => {
     expect(page2.data).toHaveLength(1);
   });
 });
+
+// Joint leave (cuti bersama) is a working day: the holiday row exists so the calendar can show
+// it, not to excuse attendance. Leave taken across one therefore consumes that day.
+describe('submitLeave — the off-day holiday policy', () => {
+  it('counts a joint-leave day toward totalDays', async () => {
+    const { user } = await createEmployeeWithUser({ joinDate: utc('2026-05-10') });
+    await createHoliday('2026-07-08', 'Cuti Bersama', 'JOINT_LEAVE');
+
+    const created = await leaveService.submitLeave(authUser(user), {
+      // Mon 6th - Sun 12th: 5 weekdays, and the Wed cuti bersama is one of them.
+      type: 'SICK',
+      startDate: utc('2026-07-06'),
+      endDate: utc('2026-07-12'),
+      reason: null,
+    });
+    expect(created.totalDays).toBe(5);
+  });
+
+  it.each(['COMPANY', 'SPECIAL'] as const)('excludes a %s holiday from totalDays', async (type) => {
+    const { user } = await createEmployeeWithUser({ joinDate: utc('2026-05-10') });
+    await createHoliday('2026-07-08', 'Company day', type);
+
+    const created = await leaveService.submitLeave(authUser(user), {
+      type: 'SICK',
+      startDate: utc('2026-07-06'),
+      endDate: utc('2026-07-12'),
+      reason: null,
+    });
+    expect(created.totalDays).toBe(4);
+  });
+
+  it('rejects a range whose only weekday is a national holiday, but accepts joint leave', async () => {
+    const { user } = await createEmployeeWithUser({ joinDate: utc('2026-05-10') });
+    await createHoliday('2026-07-08', 'National day', 'NATIONAL');
+    await expect(
+      leaveService.submitLeave(authUser(user), {
+        type: 'SICK',
+        startDate: utc('2026-07-08'),
+        endDate: utc('2026-07-08'),
+        reason: null,
+      }),
+    ).rejects.toMatchObject({ status: 400, message: /no working days/ });
+
+    await createHoliday('2026-07-09', 'Cuti Bersama', 'JOINT_LEAVE');
+    const created = await leaveService.submitLeave(authUser(user), {
+      type: 'SICK',
+      startDate: utc('2026-07-09'),
+      endDate: utc('2026-07-09'),
+      reason: null,
+    });
+    expect(created.totalDays).toBe(1);
+  });
+});

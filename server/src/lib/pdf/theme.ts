@@ -63,6 +63,29 @@ export function formatUsd(value: number): string {
   return `${sign}$ ${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${fraction}`;
 }
 
+// 'YYYY-MM-DD' → "01 Jun 2026". Parsed as UTC, since a calendar day is stored at UTC midnight
+// and splitting it on a local-time boundary would shift it a day.
+export function formatDateKey(key: string): string {
+  const [year, month, day] = key.split('-').map(Number);
+  return `${String(day).padStart(2, '0')} ${MONTHS[month - 1].slice(0, 3)} ${year}`;
+}
+
+// The inclusive pay-period range, e.g. "01 Jun 2026 - 30 Jun 2026". A hyphen rather than an
+// en dash: the PDF standard fonts are WinAnsi and this keeps the output plain ASCII.
+export function formatDateRange(startKey: string, endKey: string): string {
+  return `${formatDateKey(startKey)} - ${formatDateKey(endKey)}`;
+}
+
+// First and last calendar day of a payroll month, as date keys.
+export function periodBounds(year: number, month: number): { start: string; end: string } {
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return {
+    start: `${year}-${pad(month)}-01`,
+    end: `${year}-${pad(month)}-${pad(lastDay)}`,
+  };
+}
+
 // UTC so a timestamp reads the same wherever the PDF is opened, matching how the rest of the
 // system treats dates.
 export function formatTimestamp(date: Date): string {

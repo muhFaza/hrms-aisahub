@@ -122,7 +122,7 @@ async function computeRows(
   const monthStart = new Date(Date.UTC(year, month - 1, 1));
   const monthEnd = new Date(Date.UTC(year, month, 0));
 
-  const [employees, overtimes, dailyLogs, reimbursements, deductibleLeaves, holidays] = await Promise.all([
+  const [employees, overtimes, dailyLogs, reimbursements, leaves, holidays] = await Promise.all([
     prisma.employee.findMany({
       where: { isActive: true },
       orderBy: { fullName: 'asc' },
@@ -147,23 +147,22 @@ async function computeRows(
       where: { status: 'APPROVED', date: { gte: monthStart, lte: monthEnd } },
       select: { id: true, employeeId: true, date: true, amount: true, status: true },
     }),
-    // Deducting leave can span months; include any SICK or UNPAID record overlapping the
-    // month. computePayslipRow clips each to the in-period working days.
+    // Leave can span months; include any record overlapping it. computePayslipRow clips each to
+    // the in-period working days. Every type is fetched, not just the deducting ones: PAID
+    // leave deducts nothing but is still a day absent in the attendance summary.
     prisma.leaveRequest.findMany({
       where: {
-        type: { in: ['SICK', 'UNPAID'] },
         startDate: { lte: monthEnd },
         endDate: { gte: monthStart },
       },
       select: { id: true, employeeId: true, type: true, startDate: true, endDate: true },
     }),
+    // `type` is selected because it decides whether the day is worked — joint leave is.
     prisma.holiday.findMany({
       where: { date: { gte: monthStart, lte: monthEnd } },
-      select: { date: true },
+      select: { date: true, type: true },
     }),
   ]);
-
-  const holidayDates = holidays.map((h) => h.date);
 
   return employees.map((employee) => {
     const payrollEmployee: PayrollEmployee = {
@@ -184,7 +183,7 @@ async function computeRows(
       reimbursements: reimbursements
         .filter((r) => r.employeeId === employee.id)
         .map((r) => ({ id: r.id, date: r.date, amount: Number(r.amount), status: r.status })),
-      deductibleLeaves: deductibleLeaves
+      leaves: leaves
         .filter((s) => s.employeeId === employee.id)
         .map((s) => ({
           id: s.id,
@@ -192,7 +191,7 @@ async function computeRows(
           startDate: s.startDate,
           endDate: s.endDate,
         })),
-      holidays: holidayDates,
+      holidays,
       exchangeRate,
       year,
       month,

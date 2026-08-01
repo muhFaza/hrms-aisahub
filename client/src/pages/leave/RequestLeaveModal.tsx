@@ -18,8 +18,9 @@ interface Props {
   onClose: () => void;
 }
 
-// Weekdays in the range. The server's countWorkingDays also drops public holidays and
-// stays authoritative — this is display only, so the confirmation can show a figure.
+// Weekdays in the range. The server's countWorkingDays also drops national/company holidays
+// (but not joint leave, which is worked) and stays authoritative — this is display only, so the
+// confirmation can show a figure.
 function estimateWorkingDays(start: Dayjs, end: Dayjs): number {
   let days = 0;
   for (let cursor = start; !cursor.isAfter(end, 'day'); cursor = cursor.add(1, 'day')) {
@@ -134,8 +135,8 @@ export default function RequestLeaveModal({ open, onClose }: Props) {
               </Typography.Text>
               <br />
               <Typography.Text type="secondary">
-                Estimate — weekends excluded. Public holidays are also excluded from the recorded
-                total.
+                Estimate — weekends excluded. National and company holidays are also excluded
+                from the recorded total; joint leave (cuti bersama) is a working day and counts.
               </Typography.Text>
             </div>
 

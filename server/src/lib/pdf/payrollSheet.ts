@@ -7,9 +7,12 @@ import {
   drawField,
   drawFooters,
   drawHeader,
+  formatDateKey,
+  formatDateRange,
   formatIdr,
   formatPeriod,
   formatUsd,
+  periodBounds,
   type Doc,
 } from './theme';
 
@@ -98,14 +101,22 @@ export async function renderPayrollSheet(data: PayrollSheetData): Promise<Buffer
 
   let y = drawHeader(doc, 'Payroll Sheet', formatPeriod(data.year, data.month));
 
-  const fieldWidth = 160;
-  drawField(doc, 'Period', formatPeriod(data.year, data.month), PAGE_MARGIN, y, fieldWidth);
-  drawField(doc, 'Status', data.status, PAGE_MARGIN + fieldWidth, y, fieldWidth);
+  const bounds = periodBounds(data.year, data.month);
+  const fieldWidth = 150;
+  drawField(
+    doc,
+    'Pay period',
+    formatDateRange(bounds.start, bounds.end),
+    PAGE_MARGIN,
+    y,
+    fieldWidth * 1.4,
+  );
+  drawField(doc, 'Status', data.status, PAGE_MARGIN + fieldWidth * 1.4, y, fieldWidth * 0.7);
   drawField(
     doc,
     'Exchange rate',
     `${formatIdr(data.exchangeRate)} / USD 1.00 (${data.rateSource})`,
-    PAGE_MARGIN + fieldWidth * 2,
+    PAGE_MARGIN + fieldWidth * 2.1,
     y,
     fieldWidth * 1.4,
   );
@@ -113,11 +124,11 @@ export async function renderPayrollSheet(data: PayrollSheetData): Promise<Buffer
     doc,
     'Finalized',
     data.finalizedAt
-      ? `${data.finalizedAt.toISOString().slice(0, 10)}${data.finalizedByEmail ? ` by ${data.finalizedByEmail}` : ''}`
-      : '—',
-    PAGE_MARGIN + fieldWidth * 3.4,
+      ? `${formatDateKey(data.finalizedAt.toISOString().slice(0, 10))}${data.finalizedByEmail ? ` by ${data.finalizedByEmail}` : ''}`
+      : '-',
+    PAGE_MARGIN + fieldWidth * 3.5,
     y,
-    fieldWidth * 1.6,
+    fieldWidth * 1.9,
   );
 
   y += 40;

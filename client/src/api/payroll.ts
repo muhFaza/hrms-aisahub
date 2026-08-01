@@ -37,6 +37,20 @@ export interface PayslipDetail {
   derivedHourly?: number;
   dailyRate?: number;
   exchangeRate: number;
+  // Optional for the same reason: payslips finalized before the attendance summary existed
+  // carry no such block. Currently rendered on the payslip PDF only.
+  attendance?: PayslipAttendance;
+}
+
+export interface PayslipAttendance {
+  periodStart: string;
+  periodEnd: string;
+  scheduledWorkingDays: number;
+  actualWorkingDays: number;
+  dayOffDays: number;
+  nationalHolidayDays: number;
+  companyHolidayDays: number;
+  leaveDays: number;
 }
 
 export interface PayslipRow {
