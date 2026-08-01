@@ -1,4 +1,12 @@
-import { countWorkingDays } from './workingDays';
+import {
+  countHolidaysOnWeekdays,
+  countWeekdays,
+  countWeekendDays,
+  countWorkingDays,
+  offDayHolidayKeys,
+  toDateKey,
+  type HolidayLike,
+} from './workingDays';
 
 // Pure payroll math (design §4). DB access is kept out of here on purpose: the service
 // gathers rows and passes plain numbers/Dates so this stays unit-testable (Phase 6).
@@ -34,9 +42,10 @@ export interface ReimbursementRecord {
   status: string;
 }
 
-// SICK and UNPAID leave both deduct salary; PAID never does. The caller passes both types
-// in one list and each is counted separately for the payslip breakdown.
-export interface DeductibleLeaveRecord {
+// SICK and UNPAID leave both deduct salary; PAID never does. The caller passes every type in
+// one list: each deducting type is counted separately for the payslip breakdown, and all three
+// together make up the days absent in the attendance summary.
+export interface LeaveRecord {
   id: number;
   type: string;
   startDate: Date;
@@ -47,11 +56,27 @@ export interface ComputeContext {
   overtimes: OvertimeRecord[];
   dailyLogs: DailyLogRecord[];
   reimbursements: ReimbursementRecord[];
-  deductibleLeaves: DeductibleLeaveRecord[];
-  holidays: Date[];
+  leaves: LeaveRecord[];
+  holidays: HolidayLike[];
   exchangeRate: number;
   year: number;
   month: number; // 1-12
+}
+
+// Attendance for the pay period, frozen alongside the money at finalize time. Holidays are not
+// period-locked, so recomputing this at export time would let a payslip change after it was
+// issued — it is snapshotted for the same reason every other figure here is.
+export interface PayslipAttendance {
+  periodStart: string; // 'YYYY-MM-DD'
+  periodEnd: string;
+  // Weekdays in the period, before holidays or leave are taken off. Joint leave is worked, so
+  // it is not deducted here or anywhere below.
+  scheduledWorkingDays: number;
+  actualWorkingDays: number;
+  dayOffDays: number; // weekend days
+  nationalHolidayDays: number;
+  companyHolidayDays: number; // COMPANY and SPECIAL
+  leaveDays: number; // paid + sick + unpaid working days falling in the period
 }
 
 export interface PayslipDetail {
@@ -70,6 +95,9 @@ export interface PayslipDetail {
   derivedHourly?: number;
   dailyRate?: number;
   exchangeRate: number;
+  // Optional: payslips finalized before the attendance summary existed have no such block, and
+  // their PDFs omit the section rather than invent numbers.
+  attendance?: PayslipAttendance;
 }
 
 export interface PayslipRow {
@@ -85,6 +113,32 @@ export interface PayslipRow {
   detail: PayslipDetail;
 }
 
+// Splits a stored leaveDeduction back into its sick and unpaid halves for display.
+//
+// Per-type money is never stored: leaveDeduction is rounded once over the combined days so the
+// two breakdown lines cannot disagree with the total they sum to. Deriving sick from dailyRate
+// and handing unpaid the remainder keeps them summing to the stored total exactly, whatever
+// the rounding did.
+//
+// Payslips finalized before unpaid leave existed have neither field in their stored detail,
+// hence the `?? 0` reads. client/src/pages/payroll/PayslipBreakdown.tsx mirrors this; the
+// wire boundary rules out sharing the code, so this copy is the tested definition.
+export function splitLeaveDeduction(
+  detail: Pick<PayslipDetail, 'sickDays' | 'unpaidDays' | 'dailyRate'>,
+  leaveDeduction: number,
+): { sickDays: number; unpaidDays: number; sickDeduction: number; unpaidDeduction: number } {
+  const sickDays = detail.sickDays ?? 0;
+  const unpaidDays = detail.unpaidDays ?? 0;
+  const sickDeduction =
+    unpaidDays === 0 ? leaveDeduction : Math.round(sickDays * (detail.dailyRate ?? 0));
+  return {
+    sickDays,
+    unpaidDays,
+    sickDeduction,
+    unpaidDeduction: leaveDeduction - sickDeduction,
+  };
+}
+
 // @db.Date values arrive as UTC midnight; read in UTC so period boundaries are stable.
 function inPeriod(date: Date, year: number, month: number): boolean {
   return date.getUTCFullYear() === year && date.getUTCMonth() + 1 === month;
@@ -98,15 +152,12 @@ function roundUsd(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-function holidayKeys(holidays: Date[]): Set<string> {
-  return new Set(holidays.map((h) => h.toISOString().slice(0, 10)));
-}
-
-// Working days of one deducting leave type, clipped to the period month (a request can span
-// months — only the in-period days deduct). Weekends and holidays are excluded (design §4).
+// Working days of the given leave types, clipped to the period month (a request can span
+// months — only the in-period days count). Weekends and off-day holidays are excluded; joint
+// leave is a working day and so does count against leave taken across it.
 function daysInPeriodByType(
-  leaves: DeductibleLeaveRecord[],
-  type: 'SICK' | 'UNPAID',
+  leaves: LeaveRecord[],
+  types: readonly string[],
   holidays: Set<string>,
   year: number,
   month: number,
@@ -116,7 +167,7 @@ function daysInPeriodByType(
   let days = 0;
   const ids: number[] = [];
   for (const leave of leaves) {
-    if (leave.type !== type) continue;
+    if (!types.includes(leave.type)) continue;
     const start = leave.startDate > periodStart ? leave.startDate : periodStart;
     const end = leave.endDate < periodEnd ? leave.endDate : periodEnd;
     if (start > end) continue;
@@ -129,9 +180,82 @@ function daysInPeriodByType(
   return { days, ids };
 }
 
+// PAID deducts nothing but is still a day the employee was absent, so the attendance summary
+// counts all three types where the deduction counts only two.
+const ALL_LEAVE = ['PAID', 'SICK', 'UNPAID'] as const;
+
+/**
+ * Attendance for one employee over the pay period.
+ *
+ * The full-time figures reconcile exactly:
+ *
+ *     scheduled = actual + national + company + leave
+ *     calendar  = scheduled + dayOff
+ *
+ * Scheduled counts every weekday, holidays included, and the holiday lines then take days back
+ * off it — so the block reads as an explanation of where a month's weekdays went. Joint leave
+ * appears nowhere: those days are worked, so they stay inside `actual`.
+ *
+ * A part-timer has no fixed schedule, so `actualWorkingDays` is the number of distinct dates
+ * they logged and `scheduledWorkingDays` is left at the calendar weekday count for context.
+ */
+function computeAttendance(
+  employee: PayrollEmployee,
+  ctx: ComputeContext,
+  offDayKeys: Set<string>,
+): PayslipAttendance {
+  const { year, month } = ctx;
+  const periodStart = new Date(Date.UTC(year, month - 1, 1));
+  const periodEnd = new Date(Date.UTC(year, month, 0));
+
+  const scheduledWorkingDays = countWeekdays(periodStart, periodEnd);
+  const dayOffDays = countWeekendDays(periodStart, periodEnd);
+  const nationalHolidayDays = countHolidaysOnWeekdays(ctx.holidays, ['NATIONAL'], periodStart, periodEnd);
+  // SPECIAL is folded in with COMPANY: both are employer-declared days off, and splitting them
+  // out would add a line that is almost always zero.
+  const companyHolidayDays = countHolidaysOnWeekdays(
+    ctx.holidays,
+    ['COMPANY', 'SPECIAL'],
+    periodStart,
+    periodEnd,
+  );
+
+  if (employee.employmentType === 'PART_TIME') {
+    const loggedDates = new Set(
+      ctx.dailyLogs.filter((log) => inPeriod(log.date, year, month)).map((log) => toDateKey(log.date)),
+    );
+    return {
+      periodStart: toDateKey(periodStart),
+      periodEnd: toDateKey(periodEnd),
+      scheduledWorkingDays,
+      actualWorkingDays: loggedDates.size,
+      dayOffDays,
+      nationalHolidayDays,
+      companyHolidayDays,
+      leaveDays: 0, // part-timers cannot record leave
+    };
+  }
+
+  const leaveDays = daysInPeriodByType(ctx.leaves, ALL_LEAVE, offDayKeys, year, month).days;
+
+  return {
+    periodStart: toDateKey(periodStart),
+    periodEnd: toDateKey(periodEnd),
+    scheduledWorkingDays,
+    actualWorkingDays:
+      scheduledWorkingDays - nationalHolidayDays - companyHolidayDays - leaveDays,
+    dayOffDays,
+    nationalHolidayDays,
+    companyHolidayDays,
+    leaveDays,
+  };
+}
+
 // Computes one payslip row for an employee against the period's gathered source data.
 export function computePayslipRow(employee: PayrollEmployee, ctx: ComputeContext): PayslipRow {
   const { exchangeRate, year, month } = ctx;
+  const offDayKeys = offDayHolidayKeys(ctx.holidays);
+  const attendance = computeAttendance(employee, ctx, offDayKeys);
 
   const reimbursementsInPeriod = ctx.reimbursements.filter(
     (r) => r.status === 'APPROVED' && inPeriod(r.date, year, month),
@@ -157,9 +281,8 @@ export function computePayslipRow(employee: PayrollEmployee, ctx: ComputeContext
     const overtimeHours = overtimesInPeriod.reduce((sum, o) => sum + o.hours, 0);
     const overtimeIds = overtimesInPeriod.map((o) => o.id);
 
-    const holidaySet = holidayKeys(ctx.holidays);
-    const sick = daysInPeriodByType(ctx.deductibleLeaves, 'SICK', holidaySet, year, month);
-    const unpaid = daysInPeriodByType(ctx.deductibleLeaves, 'UNPAID', holidaySet, year, month);
+    const sick = daysInPeriodByType(ctx.leaves, ['SICK'], offDayKeys, year, month);
+    const unpaid = daysInPeriodByType(ctx.leaves, ['UNPAID'], offDayKeys, year, month);
 
     basicSalary = roundIdr(monthlySalary);
     overtimePay = roundIdr(overtimeHours * derivedHourly);
@@ -182,6 +305,7 @@ export function computePayslipRow(employee: PayrollEmployee, ctx: ComputeContext
       derivedHourly: roundUsd(derivedHourly),
       dailyRate: roundIdr(dailyRate),
       exchangeRate,
+      attendance,
     };
   } else {
     const hourlyRate = Number(employee.hourlyRate ?? 0);
@@ -206,6 +330,7 @@ export function computePayslipRow(employee: PayrollEmployee, ctx: ComputeContext
       unpaidDays: 0,
       unpaidLeaveIds: [],
       exchangeRate,
+      attendance,
     };
   }
 

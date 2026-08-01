@@ -36,3 +36,30 @@ export async function remove(req: Request, res: Response): Promise<void> {
 export async function myPayslips(req: Request, res: Response): Promise<void> {
   res.json(await payrollService.getMyPayslips(req.user!));
 }
+
+// The service returns a finished document; the controller only sets the download headers.
+// X-Export-* is read by the UI to report rows the payout file left out, so an exclusion is
+// never silent. Both are exposed to the browser — the SPA is same-origin in production but
+// runs through the Vite proxy in development.
+function sendDocument(res: Response, doc: payrollService.ExportDocument): void {
+  res.setHeader('Content-Type', doc.contentType);
+  res.setHeader('Content-Disposition', `attachment; filename="${doc.filename}"`);
+  if (doc.included !== undefined) {
+    res.setHeader('X-Export-Included', String(doc.included));
+    res.setHeader('X-Export-Excluded', String(doc.excluded ?? 0));
+    res.setHeader('Access-Control-Expose-Headers', 'X-Export-Included, X-Export-Excluded');
+  }
+  res.send(doc.body);
+}
+
+export async function exportPeriodPdf(req: Request, res: Response): Promise<void> {
+  sendDocument(res, await payrollService.exportPeriodPdf(Number(req.params.id)));
+}
+
+export async function exportPeriodCsv(req: Request, res: Response): Promise<void> {
+  sendDocument(res, await payrollService.exportPeriodCsv(Number(req.params.id)));
+}
+
+export async function exportPayslipPdf(req: Request, res: Response): Promise<void> {
+  sendDocument(res, await payrollService.exportPayslipPdf(Number(req.params.id), req.user!));
+}

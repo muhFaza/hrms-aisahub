@@ -12,6 +12,13 @@ export const payrollRoutes = Router();
 // Static route before the parameterized period routes.
 payrollRoutes.get('/my-payslips', asyncHandler(controller.myPayslips));
 
+// Any employee may export a payslip; the service restricts it to their own unless they are HR.
+payrollRoutes.get(
+  '/payslips/:id/export/pdf',
+  validate({ params: idParamSchema }),
+  asyncHandler(controller.exportPayslipPdf),
+);
+
 payrollRoutes.get('/periods', requireRole('HR'), asyncHandler(controller.listPeriods));
 payrollRoutes.post(
   '/periods',
@@ -24,6 +31,20 @@ payrollRoutes.get(
   requireRole('HR'),
   validate({ params: idParamSchema }),
   asyncHandler(controller.getPeriod),
+);
+// Registered before PATCH/DELETE on /periods/:id purely for readability — the paths differ by
+// a suffix, so order is not load-bearing here.
+payrollRoutes.get(
+  '/periods/:id/export/pdf',
+  requireRole('HR'),
+  validate({ params: idParamSchema }),
+  asyncHandler(controller.exportPeriodPdf),
+);
+payrollRoutes.get(
+  '/periods/:id/export/csv',
+  requireRole('HR'),
+  validate({ params: idParamSchema }),
+  asyncHandler(controller.exportPeriodCsv),
 );
 payrollRoutes.patch(
   '/periods/:id',

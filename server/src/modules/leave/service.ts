@@ -3,7 +3,7 @@ import dayjs from 'dayjs';
 import { prisma } from '../../config/prisma';
 import { HttpError } from '../../lib/httpError';
 import type { AuthUser } from '../../middleware/auth';
-import { countWorkingDays } from '../../lib/workingDays';
+import { countWorkingDays, offDayHolidayKeys } from '../../lib/workingDays';
 import { ensureAccrualsUpToDate, getBalanceBreakdown, planFifoAllocation } from '../../lib/accrual';
 import { assertPeriodEditable } from '../../lib/periodLock';
 import { emitToHr, resolveGroup } from '../notifications/emit';
@@ -88,15 +88,19 @@ export async function submitLeave(actor: AuthUser, input: CreateLeaveInput) {
     throw new HttpError(400, 'Leave is only available to full-time employees');
   }
 
+  // `type` decides whether the day is worked: joint leave (cuti bersama) is a working day, so
+  // leave taken across it does consume those days.
   const holidays = await prisma.holiday.findMany({
     where: { date: { gte: startDate, lte: endDate } },
-    select: { date: true },
+    select: { date: true, type: true },
   });
-  const holidayKeys = holidays.map((holiday) => holiday.date.toISOString().slice(0, 10));
-  const totalDays = countWorkingDays(startDate, endDate, holidayKeys);
+  const totalDays = countWorkingDays(startDate, endDate, offDayHolidayKeys(holidays));
 
   if (totalDays <= 0) {
-    throw new HttpError(400, 'The selected range has no working days (weekends and holidays are excluded)');
+    throw new HttpError(
+      400,
+      'The selected range has no working days (weekends and public holidays are excluded)',
+    );
   }
 
   if (input.type === 'PAID') {

@@ -13,11 +13,14 @@ import {
   Typography,
   message,
 } from 'antd';
-import { ArrowLeftOutlined, LockOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, DownloadOutlined, FilePdfOutlined, LockOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { AxiosError } from 'axios';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
+  exportPayslipPdf,
+  exportPeriodCsv,
+  exportPeriodPdf,
   useDeletePeriod,
   useFinalizePeriod,
   usePayrollPreview,
@@ -27,6 +30,7 @@ import {
   type PayslipRow,
 } from '../../api/payroll';
 import { formatIDR, formatPeriod, formatUSD } from '../../lib/format';
+import { downloadErrorMessage } from '../../lib/download';
 import PayslipBreakdown from './PayslipBreakdown';
 
 function errorMessage(err: unknown, fallback: string): string {
@@ -45,6 +49,8 @@ export default function PayrollPeriodDetailPage() {
 
   const [rate, setRate] = useState<number | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [exporting, setExporting] = useState<'pdf' | 'csv' | null>(null);
+  const [payslipExporting, setPayslipExporting] = useState<number | null>(null);
 
   useEffect(() => {
     if (data) setRate(data.period.exchangeRate);
@@ -96,6 +102,44 @@ export default function PayrollPeriodDetailPage() {
     }
   }
 
+  async function handleExport(format: 'pdf' | 'csv'): Promise<void> {
+    if (periodId === undefined) return;
+    setExporting(format);
+    try {
+      if (format === 'pdf') {
+        await exportPeriodPdf(periodId, period.year, period.month);
+        message.success('Payroll sheet downloaded');
+      } else {
+        const result = await exportPeriodCsv(periodId, period.year, period.month);
+        // Non-positive nets are left out of the payout file; say so rather than let the row
+        // count quietly differ from the sheet.
+        message.success(
+          result.excluded
+            ? `Payout file downloaded — ${result.included} of ${totals.count} employees, ` +
+                `${result.excluded} excluded (nothing payable)`
+            : `Payout file downloaded — ${result.included ?? totals.count} employees`,
+        );
+      }
+    } catch (err) {
+      message.error(await downloadErrorMessage(err, 'Export failed'));
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  async function handlePayslipExport(row: PayslipRow): Promise<void> {
+    if (row.payslipId === undefined) return;
+    setPayslipExporting(row.payslipId);
+    try {
+      await exportPayslipPdf(row.payslipId, period.year, period.month);
+      message.success(`Payslip downloaded for ${row.name}`);
+    } catch (err) {
+      message.error(await downloadErrorMessage(err, 'Export failed'));
+    } finally {
+      setPayslipExporting(null);
+    }
+  }
+
   const columns: ColumnsType<PayslipRow> = [
     { title: 'Employee', dataIndex: 'name' },
     {
@@ -127,6 +171,24 @@ export default function PayrollPeriodDetailPage() {
     },
     { title: 'Total USD', dataIndex: 'totalUsd', align: 'right', render: (v: number) => formatUSD(v) },
   ];
+
+  if (!isDraft) {
+    columns.push({
+      title: 'Payslip',
+      align: 'center',
+      render: (_v, record) =>
+        record.payslipId === undefined ? null : (
+          <Button
+            size="small"
+            icon={<FilePdfOutlined />}
+            onClick={() => handlePayslipExport(record)}
+            loading={payslipExporting === record.payslipId}
+          >
+            PDF
+          </Button>
+        ),
+    });
+  }
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
@@ -169,9 +231,27 @@ export default function PayrollPeriodDetailPage() {
               </Button>
             </Space>
           ) : (
-            <Typography.Text type="secondary">
-              <LockOutlined /> Finalized — records for this month are locked. Rate {formatIDR(period.exchangeRate)}/USD.
-            </Typography.Text>
+            <Space>
+              <Typography.Text type="secondary">
+                <LockOutlined /> Finalized — records for this month are locked. Rate{' '}
+                {formatIDR(period.exchangeRate)}/USD.
+              </Typography.Text>
+              <Button
+                icon={<FilePdfOutlined />}
+                onClick={() => handleExport('pdf')}
+                loading={exporting === 'pdf'}
+              >
+                Payroll sheet (PDF)
+              </Button>
+              <Button
+                type="primary"
+                icon={<DownloadOutlined />}
+                onClick={() => handleExport('csv')}
+                loading={exporting === 'csv'}
+              >
+                Payout file (CSV)
+              </Button>
+            </Space>
           )}
         </div>
       </Card>
@@ -182,6 +262,9 @@ export default function PayrollPeriodDetailPage() {
           columns={columns}
           dataSource={rows}
           pagination={false}
+          // Nine columns on a finalized period overflow a laptop viewport; without this the
+          // USD total and the payslip button are clipped with no way to reach them.
+          scroll={{ x: 'max-content' }}
           expandable={{
             expandedRowRender: (record) => <PayslipBreakdown {...record} />,
           }}
@@ -196,6 +279,9 @@ export default function PayrollPeriodDetailPage() {
               <Table.Summary.Cell index={7} align="right">
                 <strong>{formatUSD(totals.totalUsd)}</strong>
               </Table.Summary.Cell>
+              {/* Finalized periods carry an extra per-row payslip column; the summary needs a
+                  matching empty cell or the totals shift left under it. */}
+              {!isDraft && <Table.Summary.Cell index={8} />}
             </Table.Summary.Row>
           )}
         />

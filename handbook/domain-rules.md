@@ -143,7 +143,10 @@ silently extend an expiry date. See [known-issues.md](known-issues.md).
 ### Counting days
 
 `totalDays` is the working days in the range, **inclusive of both endpoints**, excluding
-Saturdays, Sundays, and any date in the `Holiday` table. All arithmetic is UTC.
+Saturdays, Sundays, and any **off-day** holiday. All arithmetic is UTC.
+
+Off-day means `NATIONAL`, `COMPANY` or `SPECIAL`. `JOINT_LEAVE` is *not* an off day — see
+[Holidays](#holidays) — so leave taken across a cuti bersama does consume that day.
 
 A holiday that falls on a weekend does not subtract twice. A range containing zero working
 days is rejected.
@@ -261,7 +264,8 @@ of working days.
 **Overtime pays a flat 1.0× multiplier** — there is no Indonesian statutory 1.5×/2× premium.
 
 **Sick deduction** clips cross-month requests to the period boundaries and excludes weekends
-and holidays, so only the in-period working days deduct.
+and off-day holidays, so only the in-period working days deduct. Joint leave is worked, so a
+cuti bersama day inside the request does deduct.
 
 **Daily logs count regardless of status** — they have no approval workflow at all.
 
@@ -334,23 +338,55 @@ effectively self-service pay input.
 
 Four types: `NATIONAL`, `COMPANY`, `JOINT_LEAVE` (*cuti bersama*), `SPECIAL`.
 
-**The type is purely cosmetic.** Every consumer — leave day counting, payroll deduction
-counting, the dashboard — selects only the date, with no filter on type. The type surfaces
-solely as a colour and label in the UI.
+**The type decides whether the day is worked.**
 
-The practical consequence is worth stating plainly: **cuti bersama is a free non-working day
-here. It does not deduct from anyone's paid-leave balance.** Standard Indonesian practice
-charges cuti bersama against annual leave. Neither the code nor the design document encodes
-that deduction.
+| Type | Worked? | Effect |
+| --- | --- | --- |
+| `NATIONAL` | No | Day off for everyone, deducted from nobody |
+| `COMPANY` | No | Same |
+| `SPECIAL` | No | Same; folded in with `COMPANY` on the payslip |
+| `JOINT_LEAVE` | **Yes** | An ordinary working day — the row exists so the calendar can show it |
+
+`JOINT_LEAVE` (*cuti bersama*) counting as a working day is the load-bearing part. Employees
+work those days, so leave taken across one **does** consume it: a sick leave spanning the three
+Idul Fitri cuti bersama days deducts for all three.
+
+This was not always so. The type used to be purely cosmetic — every consumer selected only the
+date — which made cuti bersama a free non-working day that was charged to nobody and quietly
+under-deducted leave. The policy now lives in one place, `lib/workingDays.ts`, and every caller
+of `countWorkingDays` must route its holiday rows through `offDayHolidayKeys` or the old
+behaviour silently returns.
+
+Payslips finalized before the change keep their original figures; they are snapshots and are
+never recomputed.
 
 Other rules:
 
 - `date` is unique globally — two holidays cannot share a date.
 - All employees can read; only HR can write.
 - Holiday mutations are **not** period-locked. Editing a holiday inside a finalized month is
-  allowed, which is harmless because payslips are snapshots.
+  allowed, which is harmless because payslips are snapshots — including the attendance summary,
+  which is frozen at finalize for exactly this reason.
 - Holidays affect payroll only indirectly, by shrinking the deducted sick/unpaid day count.
   They never reduce basic salary — the ÷21 divisor is fixed.
+
+### Attendance summary
+
+Frozen into `Payslip.detail.attendance` at finalize and rendered on the payslip PDF. For a
+full-timer the figures reconcile exactly:
+
+```
+scheduled = actual + national + company + leave
+calendar  = scheduled + dayOff
+```
+
+`scheduled` counts every weekday in the period, holidays included; the holiday and leave lines
+then take days back off it. `leave` counts **all three** leave types — `PAID` deducts no money
+but is still a day absent. Joint leave appears on no line: those days are worked, so they stay
+inside `actual`.
+
+A part-timer has no fixed schedule, so `actual` is the count of distinct dates they logged, not
+a residual, and the identity does not apply to them.
 
 ---
 

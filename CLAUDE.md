@@ -39,7 +39,7 @@ pnpm prisma:seed             # DESTRUCTIVE — wipes all tables first
 pnpm --filter server dev     # API with watch
 pnpm --filter client dev     # web app
 pnpm lint:fix                # typecheck + lint, both workspaces
-pnpm test                    # 178 server tests
+pnpm test                    # 273 server tests
 ```
 
 There is no standalone typecheck script — `pnpm build` is the typecheck.

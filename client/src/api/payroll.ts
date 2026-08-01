@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from './client';
+import { downloadFile } from '../lib/download';
 
 export type PayrollStatus = 'DRAFT' | 'FINALIZED';
 export type RateSource = 'API' | 'FALLBACK' | 'MANUAL';
@@ -36,9 +37,25 @@ export interface PayslipDetail {
   derivedHourly?: number;
   dailyRate?: number;
   exchangeRate: number;
+  // Optional for the same reason: payslips finalized before the attendance summary existed
+  // carry no such block. Currently rendered on the payslip PDF only.
+  attendance?: PayslipAttendance;
+}
+
+export interface PayslipAttendance {
+  periodStart: string;
+  periodEnd: string;
+  scheduledWorkingDays: number;
+  actualWorkingDays: number;
+  dayOffDays: number;
+  nationalHolidayDays: number;
+  companyHolidayDays: number;
+  leaveDays: number;
 }
 
 export interface PayslipRow {
+  // Present only once the period is finalized — a draft has no stored payslip to export.
+  payslipId?: number;
   employeeId: number;
   name: string;
   employmentType: EmploymentType;
@@ -162,6 +179,27 @@ export function useDeletePeriod() {
     },
     onSuccess: invalidate,
   });
+}
+
+// Exports are downloads, not cached queries — they go straight through the blob helper.
+export function exportPeriodPdf(id: number, year: number, month: number) {
+  return downloadFile(`/payroll/periods/${id}/export/pdf`, `payroll-${periodSlug(year, month)}.pdf`);
+}
+
+export function exportPeriodCsv(id: number, year: number, month: number) {
+  return downloadFile(`/payroll/periods/${id}/export/csv`, `payout-${periodSlug(year, month)}.csv`);
+}
+
+export function exportPayslipPdf(payslipId: number, year: number, month: number) {
+  return downloadFile(
+    `/payroll/payslips/${payslipId}/export/pdf`,
+    `payslip-${periodSlug(year, month)}.pdf`,
+  );
+}
+
+// Only used for the fallback filename when Content-Disposition is unreadable.
+function periodSlug(year: number, month: number): string {
+  return `${year}-${String(month).padStart(2, '0')}`;
 }
 
 export function useMyPayslips() {
