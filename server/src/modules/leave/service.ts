@@ -80,8 +80,12 @@ export async function submitLeave(actor: AuthUser, input: CreateLeaveInput) {
   const startDate = toUtcDate(input.startDate);
   const endDate = toUtcDate(input.endDate);
 
-  if (input.type === 'PAID' && employee.employmentType !== 'FULL_TIME') {
-    throw new HttpError(400, 'Paid leave is only available to full-time employees');
+  // Leave is a full-time benefit outright, not just paid leave. Part-timers are paid per
+  // logged hour, so an unlogged day is already unpaid and there is nothing to record.
+  // cancelLeave is deliberately NOT gated this way: HR must still be able to unwind a
+  // historical record belonging to someone who has since converted to part-time.
+  if (employee.employmentType !== 'FULL_TIME') {
+    throw new HttpError(400, 'Leave is only available to full-time employees');
   }
 
   const holidays = await prisma.holiday.findMany({
@@ -326,6 +330,7 @@ export async function getBalances() {
       used: breakdown.usedTotal,
       expired: breakdown.expiredTotal,
       sickTaken: breakdown.sickTaken,
+      unpaidTaken: breakdown.unpaidTaken,
     });
   }
   return rows;

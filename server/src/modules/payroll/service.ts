@@ -118,7 +118,7 @@ async function computeRows(
   const monthStart = new Date(Date.UTC(year, month - 1, 1));
   const monthEnd = new Date(Date.UTC(year, month, 0));
 
-  const [employees, overtimes, dailyLogs, reimbursements, sickLeaves, holidays] = await Promise.all([
+  const [employees, overtimes, dailyLogs, reimbursements, deductibleLeaves, holidays] = await Promise.all([
     prisma.employee.findMany({
       where: { isActive: true },
       orderBy: { fullName: 'asc' },
@@ -143,10 +143,11 @@ async function computeRows(
       where: { status: 'APPROVED', date: { gte: monthStart, lte: monthEnd } },
       select: { id: true, employeeId: true, date: true, amount: true, status: true },
     }),
-    // Sick leave can span months; include any SICK record overlapping the month.
+    // Deducting leave can span months; include any SICK or UNPAID record overlapping the
+    // month. computePayslipRow clips each to the in-period working days.
     prisma.leaveRequest.findMany({
       where: {
-        type: 'SICK',
+        type: { in: ['SICK', 'UNPAID'] },
         startDate: { lte: monthEnd },
         endDate: { gte: monthStart },
       },
@@ -179,7 +180,7 @@ async function computeRows(
       reimbursements: reimbursements
         .filter((r) => r.employeeId === employee.id)
         .map((r) => ({ id: r.id, date: r.date, amount: Number(r.amount), status: r.status })),
-      sickLeaves: sickLeaves
+      deductibleLeaves: deductibleLeaves
         .filter((s) => s.employeeId === employee.id)
         .map((s) => ({
           id: s.id,

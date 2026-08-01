@@ -15,7 +15,6 @@ interface RequestLeaveValues {
 
 interface Props {
   open: boolean;
-  isFullTime: boolean;
   onClose: () => void;
 }
 
@@ -29,7 +28,7 @@ function estimateWorkingDays(start: Dayjs, end: Dayjs): number {
   return days;
 }
 
-export default function RequestLeaveModal({ open, isFullTime, onClose }: Props) {
+export default function RequestLeaveModal({ open, onClose }: Props) {
   const [form] = Form.useForm<RequestLeaveValues>();
   const [pending, setPending] = useState<RequestLeaveValues | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
@@ -40,9 +39,8 @@ export default function RequestLeaveModal({ open, isFullTime, onClose }: Props) 
     form.resetFields();
     setPending(null);
     setAcknowledged(false);
-    // Part-timers can only take sick leave (design §4).
-    form.setFieldsValue({ type: isFullTime ? 'PAID' : 'SICK' });
-  }, [open, isFullTime, form]);
+    form.setFieldsValue({ type: 'PAID' });
+  }, [open, form]);
 
   // Step 1 only stages the values; nothing is sent until the confirmation is acknowledged.
   function onFinish(values: RequestLeaveValues): void {
@@ -80,12 +78,13 @@ export default function RequestLeaveModal({ open, isFullTime, onClose }: Props) 
     }
   }
 
-  const typeOptions = isFullTime
-    ? [
-        { value: 'PAID', label: leaveTypeLabel.PAID },
-        { value: 'SICK', label: leaveTypeLabel.SICK },
-      ]
-    : [{ value: 'SICK', label: leaveTypeLabel.SICK }];
+  // Leave is a full-time-only feature, so every type is available to everyone who can reach
+  // this modal. Sick and unpaid both deduct salary; only paid draws on the accrued balance.
+  const typeOptions = [
+    { value: 'PAID', label: leaveTypeLabel.PAID },
+    { value: 'SICK', label: leaveTypeLabel.SICK },
+    { value: 'UNPAID', label: leaveTypeLabel.UNPAID },
+  ];
 
   return (
     <>
@@ -143,6 +142,13 @@ export default function RequestLeaveModal({ open, isFullTime, onClose }: Props) 
             <Typography.Text>
               Leave is recorded immediately — there is no HR approval step.
             </Typography.Text>
+
+            {pending.type !== 'PAID' && (
+              <Typography.Text type="warning">
+                {leaveTypeLabel[pending.type]} is deducted from your salary at your daily rate
+                for each working day taken. It does not use your accrued paid leave balance.
+              </Typography.Text>
+            )}
 
             <Checkbox
               checked={acknowledged}

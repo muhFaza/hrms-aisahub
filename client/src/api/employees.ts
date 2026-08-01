@@ -10,6 +10,8 @@ export interface Employee {
   joinDate: string;
   position: string;
   employmentType: EmploymentType;
+  // Paid-leave accrual anchor; null for part-timers. See handbook/domain-rules.md.
+  fullTimeSince: string | null;
   contractStartDate: string | null;
   contractEndDate: string | null;
   contractFilePath: string | null;
@@ -53,6 +55,8 @@ export interface EmployeeFormPayload {
   joinDate: string;
   position: string;
   employmentType: EmploymentType;
+  // Omit to let the server derive it from the employmentType transition.
+  fullTimeSince?: string | null;
   contractStartDate?: string | null;
   contractEndDate?: string | null;
   monthlySalary?: number | null;

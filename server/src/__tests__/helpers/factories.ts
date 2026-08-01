@@ -48,16 +48,30 @@ export interface EmployeeOptions {
   email?: string | null;
   isActive?: boolean;
   monthlySalary?: number;
+  fullTimeSince?: Date | null;
 }
 
 export async function createEmployee(options: EmployeeOptions = {}) {
+  const joinDate = options.joinDate ?? utc('2026-01-01');
+  const employmentType = options.employmentType ?? 'FULL_TIME';
+  // Mirrors what the employee service derives on create: full-timers are anchored at their
+  // join date, part-timers have no anchor and accrue nothing. Pass fullTimeSince explicitly
+  // to model someone promoted from part-time partway through.
+  const fullTimeSince =
+    options.fullTimeSince !== undefined
+      ? options.fullTimeSince
+      : employmentType === 'FULL_TIME'
+        ? joinDate
+        : null;
+
   return prisma.employee.create({
     data: {
       fullName: options.fullName ?? unique('Test Employee'),
       nickname: null,
-      joinDate: options.joinDate ?? utc('2026-01-01'),
+      joinDate,
       position: 'Engineer',
-      employmentType: options.employmentType ?? 'FULL_TIME',
+      employmentType,
+      fullTimeSince,
       email: options.email === undefined ? `${unique('employee')}@example.test` : options.email,
       isActive: options.isActive ?? true,
       monthlySalary: options.monthlySalary ?? 10_000_000,

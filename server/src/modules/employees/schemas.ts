@@ -21,6 +21,10 @@ const employeeFields = z.object({
   joinDate: z.coerce.date(),
   position: z.string().trim().min(1),
   employmentType: z.enum(['FULL_TIME', 'PART_TIME']),
+  // Accrual anchor. Omit it and the service derives it from the employmentType transition;
+  // supply it to correct a conversion that was recorded late, which would otherwise cost the
+  // employee the accrual months between the effective date and the date it was entered.
+  fullTimeSince: z.coerce.date().nullish(),
   contractStartDate: z.coerce.date().nullish(),
   contractEndDate: z.coerce.date().nullish(),
   monthlySalary: z.coerce.number().nonnegative().nullish(),

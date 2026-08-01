@@ -67,28 +67,26 @@ describe('submitLeave', () => {
     ).rejects.toMatchObject({ status: 404 });
   });
 
-  it('refuses PAID leave for a part-time employee (400)', async () => {
-    const { user } = await createEmployeeWithUser({ employmentType: 'PART_TIME' });
-    await expect(
-      leaveService.submitLeave(authUser(user), {
-        type: 'PAID',
-        startDate: utc('2026-07-06'),
-        endDate: utc('2026-07-07'),
-        reason: null,
-      }),
-    ).rejects.toMatchObject({ status: 400, message: /only available to full-time/ });
-  });
+  // Leave is a full-time-only feature: every type is refused for a part-timer, who is paid
+  // per logged hour and is therefore already unpaid for any day they do not log.
+  it.each(['PAID', 'SICK', 'UNPAID'] as const)(
+    'refuses %s leave for a part-time employee (400)',
+    async (type) => {
+      const { employee, user } = await createEmployeeWithUser({ employmentType: 'PART_TIME' });
+      await expect(
+        leaveService.submitLeave(authUser(user), {
+          type,
+          startDate: utc('2026-07-06'),
+          endDate: utc('2026-07-07'),
+          reason: null,
+        }),
+      ).rejects.toMatchObject({ status: 400, message: /only available to full-time/ });
 
-  it('allows SICK leave for a part-time employee', async () => {
-    const { user } = await createEmployeeWithUser({ employmentType: 'PART_TIME' });
-    const created = await leaveService.submitLeave(authUser(user), {
-      type: 'SICK',
-      startDate: utc('2026-07-06'),
-      endDate: utc('2026-07-07'),
-      reason: 'flu',
-    });
-    expect(created).toMatchObject({ type: 'SICK', totalDays: 2 });
-  });
+      // Assert on stored state, not just the rejection: nothing may be written.
+      const stored = await prisma.leaveRequest.count({ where: { employeeId: employee.id } });
+      expect(stored).toBe(0);
+    },
+  );
 
   it('rejects a range containing no working days (400)', async () => {
     const { user } = await fullTimerWithThreeAccrualDays();
@@ -285,6 +283,35 @@ describe('submitLeave', () => {
     const { user } = await createEmployeeWithUser({ joinDate: utc('2026-07-05') });
     const created = await leaveService.submitLeave(authUser(user), {
       type: 'SICK',
+      startDate: utc('2026-07-06'),
+      endDate: utc('2026-07-10'),
+      reason: null,
+    });
+    expect(created.totalDays).toBe(5);
+  });
+
+  it('does not touch accruals when UNPAID leave is submitted', async () => {
+    const { employee, user } = await fullTimerWithThreeAccrualDays();
+    const created = await leaveService.submitLeave(authUser(user), {
+      type: 'UNPAID',
+      startDate: utc('2026-07-06'),
+      endDate: utc('2026-07-08'),
+      reason: null,
+    });
+    expect(created).toMatchObject({ type: 'UNPAID', totalDays: 3 });
+
+    const consumed = await prisma.leaveAccrual.aggregate({
+      where: { employeeId: employee.id },
+      _sum: { daysConsumed: true },
+    });
+    expect(Number(consumed._sum.daysConsumed)).toBe(0);
+  });
+
+  it('skips the balance check for UNPAID leave', async () => {
+    // Only 1 accrued day, and 5 days requested: unpaid leave is not drawn from the pool.
+    const { user } = await createEmployeeWithUser({ joinDate: utc('2026-07-05') });
+    const created = await leaveService.submitLeave(authUser(user), {
+      type: 'UNPAID',
       startDate: utc('2026-07-06'),
       endDate: utc('2026-07-10'),
       reason: null,
@@ -489,28 +516,33 @@ describe('cancelLeave', () => {
     expect(Number(expiredAfter.daysConsumed)).toBe(2);
   });
 
-  it('refunds nothing when the cancelled leave is SICK', async () => {
-    const { employee, user } = await createEmployeeWithUser();
-    const accrual = await createAccrual({
-      employeeId: employee.id,
-      period: '2026-01-01',
-      expiresAt: '2027-07-01',
-      days: 2,
-      daysConsumed: 2,
-    });
-    const request = await createLeaveRequest({
-      employeeId: employee.id,
-      startDate: '2026-07-20',
-      endDate: '2026-07-21',
-      totalDays: 2,
-      type: 'SICK',
-    });
+  // Neither type consumed anything on the way in, so neither may manufacture balance on the
+  // way out. Only PAID refunds.
+  it.each(['SICK', 'UNPAID'] as const)(
+    'refunds nothing when the cancelled leave is %s',
+    async (type) => {
+      const { employee, user } = await createEmployeeWithUser();
+      const accrual = await createAccrual({
+        employeeId: employee.id,
+        period: '2026-01-01',
+        expiresAt: '2027-07-01',
+        days: 2,
+        daysConsumed: 2,
+      });
+      const request = await createLeaveRequest({
+        employeeId: employee.id,
+        startDate: '2026-07-20',
+        endDate: '2026-07-21',
+        totalDays: 2,
+        type,
+      });
 
-    await leaveService.cancelLeave(request.id, authUser(user));
+      await leaveService.cancelLeave(request.id, authUser(user));
 
-    const after = await prisma.leaveAccrual.findUniqueOrThrow({ where: { id: accrual.id } });
-    expect(Number(after.daysConsumed)).toBe(2);
-  });
+      const after = await prisma.leaveAccrual.findUniqueOrThrow({ where: { id: accrual.id } });
+      expect(Number(after.daysConsumed)).toBe(2);
+    },
+  );
 
   it('lets an employee cancel on the start date itself', async () => {
     const { employee, user } = await createEmployeeWithUser();
@@ -615,6 +647,62 @@ describe('cancelLeave', () => {
     ).resolves.not.toBeNull();
     const after = await prisma.leaveAccrual.findUniqueOrThrow({ where: { id: accrual.id } });
     expect(Number(after.daysConsumed)).toBe(2);
+  });
+
+  // cancelLeave is deliberately not gated on employment type. Leave history survives an
+  // employee converting to part-time, and HR must still be able to unwind a record.
+  it('lets HR cancel a part-time employee\'s historical leave', async () => {
+    const hr = await createUser({ roleName: 'HR' });
+    const employee = await createEmployee({ employmentType: 'PART_TIME' });
+    const request = await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-07-06',
+      endDate: '2026-07-07',
+      totalDays: 2,
+      type: 'SICK',
+    });
+
+    await leaveService.cancelLeave(request.id, authUser(hr));
+    await expect(prisma.leaveRequest.findUnique({ where: { id: request.id } })).resolves.toBeNull();
+  });
+});
+
+describe('getBalance', () => {
+  it('reports sickTaken and unpaidTaken as independent lifetime totals', async () => {
+    const { employee } = await createEmployeeWithUser({ joinDate: utc('2026-05-10') });
+    await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-06-08',
+      endDate: '2026-06-09',
+      totalDays: 2,
+      type: 'SICK',
+    });
+    await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-06-15',
+      endDate: '2026-06-17',
+      totalDays: 3,
+      type: 'UNPAID',
+    });
+    // PAID must not leak into either total.
+    await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-06-22',
+      endDate: '2026-06-23',
+      totalDays: 2,
+      type: 'PAID',
+    });
+
+    const balance = await leaveService.getBalance(employee.id);
+    expect(balance.sickTaken).toBe(2);
+    expect(balance.unpaidTaken).toBe(3);
+  });
+
+  it('reports zero for a type with no records', async () => {
+    const { employee } = await createEmployeeWithUser({ joinDate: utc('2026-05-10') });
+    const balance = await leaveService.getBalance(employee.id);
+    expect(balance.sickTaken).toBe(0);
+    expect(balance.unpaidTaken).toBe(0);
   });
 });
 

@@ -33,6 +33,11 @@ Notable fields: `employmentType` (required, no default — drives all salary log
 on employment type), `thrEligible` (Tunjangan Hari Raya — the Indonesian religious-holiday
 bonus), `ktpNumber` (national ID, stored as plain text), and `contractFilePath`.
 
+`fullTimeSince` (nullable) is the **paid-leave accrual anchor** — accrual runs from this date,
+not `joinDate`, so a part-timer promoted to full-time does not earn days retroactively for
+the months they were part-time. `NULL` for part-timers. The service derives it from the
+`employmentType` transition; see [domain-rules.md](domain-rules.md).
+
 `Employee.email` is separate from `User.email` and is **not unique** — it is the payslip
 delivery address.
 
@@ -186,9 +191,11 @@ does it automatically, and no `ON DELETE` variant preserves identity.
 - `FULL_TIME` — salaried against `monthlySalary`; accrues paid leave; may claim overtime.
 - `PART_TIME` — hourly, `hourlyRate` × logged hours; no paid-leave accrual; no overtime.
 
-**`LeaveType`**
+**`LeaveType`** — leave is a full-time-only feature; part-timers cannot submit any of these.
 - `PAID` — draws down the accrual balance at submission, FIFO by expiry date.
-- `SICK` — unpaid, no accrual impact, but produces a payroll deduction for full-timers.
+- `SICK` — no accrual impact, produces a payroll deduction.
+- `UNPAID` — mechanically identical to `SICK`; the two differ only in what they record about
+  why the day was taken, which is what the payslip breakdown splits on.
 
 **`RequestStatus`** — the approval lifecycle for **overtime and reimbursements only**.
 `PENDING` → `APPROVED` or `REJECTED`. Only `APPROVED` rows count toward payroll. Leave used
@@ -273,8 +280,9 @@ payslips are seeded; they only exist after a finalize.
 The schema mixes two representations of what are all semantically calendar dates:
 
 - **True `DATE`**: `Holiday.date`, `DailyLog.date`, `Overtime.date`, `Reimbursement.date`
-- **`TIMESTAMP(3)` acting as a date**: `Employee.joinDate`, both contract dates,
-  `LeaveAccrual.period`, `LeaveAccrual.expiresAt`, `LeaveRequest.startDate`/`endDate`
+- **`TIMESTAMP(3)` acting as a date**: `Employee.joinDate`, `Employee.fullTimeSince`, both
+  contract dates, `LeaveAccrual.period`, `LeaveAccrual.expiresAt`,
+  `LeaveRequest.startDate`/`endDate`
 
 The codebase compensates by always writing UTC midnight by hand:
 

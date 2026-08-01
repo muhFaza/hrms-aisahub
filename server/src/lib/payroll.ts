@@ -34,7 +34,9 @@ export interface ReimbursementRecord {
   status: string;
 }
 
-export interface SickLeaveRecord {
+// SICK and UNPAID leave both deduct salary; PAID never does. The caller passes both types
+// in one list and each is counted separately for the payslip breakdown.
+export interface DeductibleLeaveRecord {
   id: number;
   type: string;
   startDate: Date;
@@ -45,7 +47,7 @@ export interface ComputeContext {
   overtimes: OvertimeRecord[];
   dailyLogs: DailyLogRecord[];
   reimbursements: ReimbursementRecord[];
-  sickLeaves: SickLeaveRecord[];
+  deductibleLeaves: DeductibleLeaveRecord[];
   holidays: Date[];
   exchangeRate: number;
   year: number;
@@ -63,6 +65,8 @@ export interface PayslipDetail {
   reimbursementIds: number[];
   sickDays: number;
   sickLeaveIds: number[];
+  unpaidDays: number;
+  unpaidLeaveIds: number[];
   derivedHourly?: number;
   dailyRate?: number;
   exchangeRate: number;
@@ -98,10 +102,11 @@ function holidayKeys(holidays: Date[]): Set<string> {
   return new Set(holidays.map((h) => h.toISOString().slice(0, 10)));
 }
 
-// SICK working-days clipped to the period month (a request can span months — only the
-// in-period days deduct). Weekends and holidays are excluded (design §4).
-function sickDaysInPeriod(
-  sickLeaves: SickLeaveRecord[],
+// Working days of one deducting leave type, clipped to the period month (a request can span
+// months — only the in-period days deduct). Weekends and holidays are excluded (design §4).
+function daysInPeriodByType(
+  leaves: DeductibleLeaveRecord[],
+  type: 'SICK' | 'UNPAID',
   holidays: Set<string>,
   year: number,
   month: number,
@@ -110,8 +115,8 @@ function sickDaysInPeriod(
   const periodEnd = new Date(Date.UTC(year, month, 0)); // last day of month
   let days = 0;
   const ids: number[] = [];
-  for (const leave of sickLeaves) {
-    if (leave.type !== 'SICK') continue;
+  for (const leave of leaves) {
+    if (leave.type !== type) continue;
     const start = leave.startDate > periodStart ? leave.startDate : periodStart;
     const end = leave.endDate < periodEnd ? leave.endDate : periodEnd;
     if (start > end) continue;
@@ -152,11 +157,15 @@ export function computePayslipRow(employee: PayrollEmployee, ctx: ComputeContext
     const overtimeHours = overtimesInPeriod.reduce((sum, o) => sum + o.hours, 0);
     const overtimeIds = overtimesInPeriod.map((o) => o.id);
 
-    const sick = sickDaysInPeriod(ctx.sickLeaves, holidayKeys(ctx.holidays), year, month);
+    const holidaySet = holidayKeys(ctx.holidays);
+    const sick = daysInPeriodByType(ctx.deductibleLeaves, 'SICK', holidaySet, year, month);
+    const unpaid = daysInPeriodByType(ctx.deductibleLeaves, 'UNPAID', holidaySet, year, month);
 
     basicSalary = roundIdr(monthlySalary);
     overtimePay = roundIdr(overtimeHours * derivedHourly);
-    leaveDeduction = roundIdr(sick.days * dailyRate);
+    // Rounded once over the combined days, not per type: rounding each separately would let
+    // the two payslip breakdown lines disagree with the total they sum to.
+    leaveDeduction = roundIdr((sick.days + unpaid.days) * dailyRate);
 
     detail = {
       employmentType: 'FULL_TIME',
@@ -168,6 +177,8 @@ export function computePayslipRow(employee: PayrollEmployee, ctx: ComputeContext
       reimbursementIds,
       sickDays: sick.days,
       sickLeaveIds: sick.ids,
+      unpaidDays: unpaid.days,
+      unpaidLeaveIds: unpaid.ids,
       derivedHourly: roundUsd(derivedHourly),
       dailyRate: roundIdr(dailyRate),
       exchangeRate,
@@ -188,8 +199,12 @@ export function computePayslipRow(employee: PayrollEmployee, ctx: ComputeContext
       dailyLogHours,
       dailyLogIds,
       reimbursementIds,
+      // Part-timers are paid per logged hour, so an unlogged day is already unpaid — there
+      // is nothing to deduct. They can no longer record leave at all.
       sickDays: 0,
       sickLeaveIds: [],
+      unpaidDays: 0,
+      unpaidLeaveIds: [],
       exchangeRate,
     };
   }

@@ -5,7 +5,7 @@ export const idParamSchema = z.object({
 });
 
 export const listLeaveQuerySchema = z.object({
-  type: z.enum(['PAID', 'SICK']).optional(),
+  type: z.enum(['PAID', 'SICK', 'UNPAID']).optional(),
   employeeId: z.coerce.number().int().positive().optional(),
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().positive().max(100).default(20),
@@ -13,7 +13,7 @@ export const listLeaveQuerySchema = z.object({
 
 export const createLeaveSchema = z
   .object({
-    type: z.enum(['PAID', 'SICK']),
+    type: z.enum(['PAID', 'SICK', 'UNPAID']),
     startDate: z.coerce.date(),
     endDate: z.coerce.date(),
     reason: z.string().trim().max(500).nullish(),

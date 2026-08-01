@@ -1,5 +1,5 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
-import { RequireAuth, RequireRole } from './lib/guards';
+import { RequireAuth, RequireFullTime, RequireRole } from './lib/guards';
 import AppLayout from './layouts/AppLayout';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
@@ -115,7 +115,14 @@ export default function App() {
         />
 
         {/* Employee self-service modules. */}
-        <Route path="/my-leave" element={<MyLeavePage />} />
+        <Route
+          path="/my-leave"
+          element={
+            <RequireFullTime>
+              <MyLeavePage />
+            </RequireFullTime>
+          }
+        />
         <Route path="/my-daily-log" element={<MyDailyLogPage />} />
         <Route path="/my-overtime" element={<MyOvertimePage />} />
         <Route path="/my-reimbursements" element={<MyReimbursementsPage />} />

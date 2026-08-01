@@ -207,7 +207,76 @@ describe('leave routes — request validation', () => {
     const res = await request(app)
       .post(API)
       .set('Authorization', `Bearer ${signToken(user)}`)
-      .send({ type: 'UNPAID', startDate: '2026-07-06', endDate: '2026-07-07' });
+      .send({ type: 'MATERNITY', startDate: '2026-07-06', endDate: '2026-07-07' });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('leave routes — unpaid leave', () => {
+  it('records unpaid leave without drawing on the accrual balance', async () => {
+    const { employee, user } = await createEmployeeWithUser({
+      joinDate: new Date('2026-05-10T00:00:00.000Z'),
+    });
+    const token = signToken(user);
+
+    const res = await request(app)
+      .post(API)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ type: 'UNPAID', startDate: '2026-07-06', endDate: '2026-07-08' });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ type: 'UNPAID', totalDays: 3 });
+
+    const consumed = await prisma.leaveAccrual.aggregate({
+      where: { employeeId: employee.id },
+      _sum: { daysConsumed: true },
+    });
+    expect(Number(consumed._sum.daysConsumed)).toBe(0);
+
+    const balance = await request(app)
+      .get(`${API}/balance`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(balance.body.unpaidTaken).toBe(3);
+  });
+
+  it('filters the list by type=UNPAID', async () => {
+    const { employee, user } = await createEmployeeWithUser();
+    await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-07-06',
+      endDate: '2026-07-07',
+      totalDays: 2,
+      type: 'UNPAID',
+    });
+    await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-07-13',
+      endDate: '2026-07-14',
+      totalDays: 2,
+      type: 'SICK',
+    });
+
+    const res = await request(app)
+      .get(`${API}?type=UNPAID`)
+      .set('Authorization', `Bearer ${signToken(user)}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].type).toBe('UNPAID');
+  });
+
+  it('refuses any leave type for a part-time employee (400)', async () => {
+    const { employee, user } = await createEmployeeWithUser({ employmentType: 'PART_TIME' });
+
+    const res = await request(app)
+      .post(API)
+      .set('Authorization', `Bearer ${signToken(user)}`)
+      .send({ type: 'UNPAID', startDate: '2026-07-06', endDate: '2026-07-07' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/only available to full-time/);
+
+    const stored = await prisma.leaveRequest.count({ where: { employeeId: employee.id } });
+    expect(stored).toBe(0);
   });
 });
