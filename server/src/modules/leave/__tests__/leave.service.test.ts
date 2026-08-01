@@ -863,6 +863,26 @@ describe('submitLeave — the off-day holiday policy', () => {
     expect(created.totalDays).toBe(5);
   });
 
+  // Leave overrides the joint-leave marking: the day is worked, so taking leave on it consumes
+  // balance exactly like any other working day.
+  it('consumes paid-leave balance for a day that is also cuti bersama', async () => {
+    const { employee, user } = await createEmployeeWithUser({ joinDate: utc('2026-01-10') });
+    await createHoliday('2026-07-08', 'Cuti Bersama', 'JOINT_LEAVE');
+
+    const before = await leaveService.getBalance(employee.id);
+    const created = await leaveService.submitLeave(authUser(user), {
+      // Wed 8th only — a cuti bersama day.
+      type: 'PAID',
+      startDate: utc('2026-07-08'),
+      endDate: utc('2026-07-08'),
+      reason: null,
+    });
+    const after = await leaveService.getBalance(employee.id);
+
+    expect(created.totalDays).toBe(1);
+    expect(before.balance - after.balance).toBe(1);
+  });
+
   it.each(['COMPANY', 'SPECIAL'] as const)('excludes a %s holiday from totalDays', async (type) => {
     const { user } = await createEmployeeWithUser({ joinDate: utc('2026-05-10') });
     await createHoliday('2026-07-08', 'Company day', type);
