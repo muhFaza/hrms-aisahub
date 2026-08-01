@@ -4,7 +4,7 @@ import request from 'supertest';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { app } from '../../../app';
 import { prisma } from '../../../config/prisma';
-import { uploadDir } from '../../../middleware/upload';
+import { MAX_UPLOAD_BYTES, uploadDir } from '../../../middleware/upload';
 import { createEmployeeWithUser, resetDb, signToken } from '../../../__tests__/helpers/factories';
 
 // Complements reimbursements.service.test.ts: multer writes the evidence file to disk
@@ -77,5 +77,49 @@ describe('POST /reimbursements — orphaned uploads', () => {
     const filePath = path.join(uploadDir, path.basename(stored.evidenceFilePath));
     expect(fs.existsSync(filePath)).toBe(true);
     fs.rmSync(filePath, { force: true });
+  });
+});
+
+describe('POST /reimbursements — rejected evidence files', () => {
+  it('rejects evidence over the size cap with a 400 naming the limit', async () => {
+    const { user } = await createEmployeeWithUser();
+    const before = uploadedFiles();
+
+    const res = await request(app)
+      .post(API)
+      .set('Authorization', `Bearer ${signToken(user)}`)
+      .field('date', '2026-07-06')
+      .field('amount', '250000')
+      .field('description', 'Client taxi')
+      .attach('evidence', Buffer.alloc(MAX_UPLOAD_BYTES + 1024, 'a'), {
+        filename: 'receipt.pdf',
+        contentType: 'application/pdf',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(`${MAX_UPLOAD_BYTES / (1024 * 1024)}MB`);
+    expect(await prisma.reimbursement.count()).toBe(0);
+    expect(await waitForFileCount(before.length)).toEqual(before);
+  });
+
+  it('rejects evidence with a disallowed mime type', async () => {
+    const { user } = await createEmployeeWithUser();
+    const before = uploadedFiles();
+
+    const res = await request(app)
+      .post(API)
+      .set('Authorization', `Bearer ${signToken(user)}`)
+      .field('date', '2026-07-06')
+      .field('amount', '250000')
+      .field('description', 'Client taxi')
+      .attach('evidence', Buffer.from('not a receipt'), {
+        filename: 'receipt.txt',
+        contentType: 'text/plain',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Only PDF, JPG, and PNG files are allowed');
+    expect(await prisma.reimbursement.count()).toBe(0);
+    expect(await waitForFileCount(before.length)).toEqual(before);
   });
 });

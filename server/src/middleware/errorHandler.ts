@@ -1,8 +1,9 @@
 import type { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
 import { Prisma } from '@prisma/client';
+import multer from 'multer';
 import { HttpError } from '../lib/httpError';
-import { removeUploadedFile } from './upload';
+import { MAX_UPLOAD_BYTES, removeUploadedFile } from './upload';
 
 export function notFoundHandler(req: Request, res: Response): void {
   res.status(404).json({ error: 'Not Found', path: req.originalUrl });
@@ -38,6 +39,17 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
 
   if (err instanceof HttpError) {
     res.status(err.status).json({ error: err.message, details: err.details });
+    return;
+  }
+
+  // Multer rejects oversize or malformed uploads before any handler runs; without this
+  // they are unrecognised objects and fall through to a misleading 500.
+  if (err instanceof multer.MulterError) {
+    const message =
+      err.code === 'LIMIT_FILE_SIZE'
+        ? `File is too large — the maximum upload size is ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB`
+        : err.message;
+    res.status(400).json({ error: message, details: { code: err.code } });
     return;
   }
 

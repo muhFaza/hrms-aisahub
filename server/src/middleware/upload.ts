@@ -9,6 +9,8 @@ import { env } from '../config/env';
 const uploadDir = env.uploadDir;
 fs.mkdirSync(uploadDir, { recursive: true });
 
+export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
 const allowedMimeTypes = ['application/pdf', 'image/jpeg', 'image/png'];
 
 const storage = multer.diskStorage({
@@ -23,7 +25,7 @@ const storage = multer.diskStorage({
 // Disk storage under server/uploads/, 5MB cap, PDF/JPG/PNG only.
 export const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: MAX_UPLOAD_BYTES },
   fileFilter: (_req, file, cb) => {
     if (allowedMimeTypes.includes(file.mimetype)) {
       cb(null, true);
