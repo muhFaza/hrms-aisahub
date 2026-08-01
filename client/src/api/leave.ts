@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from './client';
 import type { Holiday } from './holidays';
 
@@ -120,6 +120,9 @@ export function useLeaveBalances() {
 
 export function useLeaveCalendar(month: string) {
   return useQuery({
+    // Month stepping is a one-click action, so hold the previous month's badges on screen
+    // while the next one loads rather than blanking the grid on every step.
+    placeholderData: keepPreviousData,
     queryKey: ['leave-calendar', month],
     queryFn: async () => {
       const { data } = await apiClient.get<LeaveCalendarResponse>('/leave/calendar', {
