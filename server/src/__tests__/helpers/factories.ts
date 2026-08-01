@@ -46,23 +46,36 @@ export interface EmployeeOptions {
   employmentType?: EmploymentType;
   joinDate?: Date;
   email?: string | null;
-  isActive?: boolean;
   monthlySalary?: number;
+  // Accrual anchor on the opening employment. Pass null explicitly to model someone the
+  // catch-up must skip — that is how a test pins an exact set of accrual rows without also
+  // making the employee unable to submit leave.
   fullTimeSince?: Date | null;
+  // Ends the opening employment. `true` ends it yesterday; pass a Date to choose. This is
+  // what replaced isActive: false — an employee is no longer switched off by a boolean.
+  terminated?: boolean | Date;
+  contractStartDate?: Date | null;
+  contractEndDate?: Date | null;
 }
 
 export async function createEmployee(options: EmployeeOptions = {}) {
   const joinDate = options.joinDate ?? utc('2026-01-01');
   const employmentType = options.employmentType ?? 'FULL_TIME';
   // Mirrors what the employee service derives on create: full-timers are anchored at their
-  // join date, part-timers have no anchor and accrue nothing. Pass fullTimeSince explicitly
-  // to model someone promoted from part-time partway through.
+  // join date, part-timers have no anchor and accrue nothing.
   const fullTimeSince =
     options.fullTimeSince !== undefined
       ? options.fullTimeSince
       : employmentType === 'FULL_TIME'
         ? joinDate
         : null;
+
+  const endDate =
+    options.terminated === undefined || options.terminated === false
+      ? null
+      : options.terminated === true
+        ? new Date(Date.now() - 24 * 60 * 60 * 1000)
+        : options.terminated;
 
   return prisma.employee.create({
     data: {
@@ -71,12 +84,32 @@ export async function createEmployee(options: EmployeeOptions = {}) {
       joinDate,
       position: 'Engineer',
       employmentType,
-      fullTimeSince,
       email: options.email === undefined ? `${unique('employee')}@example.test` : options.email,
-      isActive: options.isActive ?? true,
       monthlySalary: options.monthlySalary ?? 10_000_000,
+      // Every employee opens with exactly one employment, exactly as the service does.
+      employments: {
+        create: {
+          startDate: joinDate,
+          endDate,
+          endReason: endDate ? 'CONTRACT_END' : null,
+          fullTimeSince,
+          contractStartDate: options.contractStartDate ?? null,
+          contractEndDate: options.contractEndDate ?? null,
+        },
+      },
     },
   });
+}
+
+// The employee's current employment — tests that assert on termination or accrual scoping
+// need its id.
+export async function currentEmployment(employeeId: number) {
+  const employment = await prisma.employment.findFirst({
+    where: { employeeId },
+    orderBy: [{ endDate: { sort: 'desc', nulls: 'first' } }, { startDate: 'desc' }],
+  });
+  if (!employment) throw new Error(`no employment for employee ${employeeId}`);
+  return employment;
 }
 
 export interface UserOptions {
@@ -102,14 +135,23 @@ export async function createUser(options: UserOptions = {}) {
 }
 
 // An employee profile plus the account linked to it — the common case.
+//
+// `email` is the EMPLOYEE's (the payslip address); `userEmail` is the login. They are
+// separate columns and only the second one can be used to sign in, so a test that needs to
+// hit /auth/login must set userEmail.
 export async function createEmployeeWithUser(
-  options: EmployeeOptions & { roleName?: string; isActive?: boolean } = {},
+  options: EmployeeOptions & {
+    roleName?: string;
+    isActive?: boolean;
+    userEmail?: string;
+  } = {},
 ) {
   const employee = await createEmployee(options);
   const user = await createUser({
     roleName: options.roleName ?? 'EMPLOYEE',
     employeeId: employee.id,
     isActive: options.isActive,
+    email: options.userEmail,
   });
   return { employee, user };
 }
@@ -144,12 +186,17 @@ export interface AccrualOptions {
   expiresAt: string;
   days?: number;
   daysConsumed?: number;
+  // Defaults to the employee's current employment, which is what every existing test means.
+  employmentId?: number;
 }
 
 export async function createAccrual(options: AccrualOptions) {
+  const employmentId =
+    options.employmentId ?? (await currentEmployment(options.employeeId)).id;
   return prisma.leaveAccrual.create({
     data: {
       employeeId: options.employeeId,
+      employmentId,
       period: utc(options.period),
       expiresAt: utc(options.expiresAt),
       days: options.days ?? 1,

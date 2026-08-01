@@ -2,6 +2,26 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from './client';
 import type { EmploymentType } from './auth';
 
+export type EmploymentStatus = 'ACTIVE' | 'TERMINATED';
+export type EmploymentEndReason = 'CONTRACT_END' | 'RESIGNATION' | 'DISMISSAL' | 'OTHER';
+
+// One period of employment. A rehire opens a new one rather than editing the old, so this
+// list is the audit trail of somebody's engagements.
+export interface Employment {
+  id: number;
+  startDate: string;
+  endDate: string | null;
+  endReason: EmploymentEndReason | null;
+  endNote: string | null;
+  contractStartDate: string | null;
+  contractEndDate: string | null;
+  contractFilePath: string | null;
+  fullTimeSince: string | null;
+  leaveBalanceAtEnd: number | null;
+  recordedById: number | null;
+  createdAt: string;
+}
+
 // Decimal columns arrive as strings from the server (Prisma Decimal.toJSON).
 export interface Employee {
   id: number;
@@ -28,7 +48,11 @@ export interface Employee {
   bankAccountNumber: string | null;
   ktpNumber: string | null;
   phoneNumber: string | null;
-  isActive: boolean;
+  // Derived from the current employment, never stored. The contract fields above come from
+  // that same employment; `employments` is the full history, newest first.
+  status: EmploymentStatus;
+  terminationDate: string | null;
+  employments: Employment[];
   createdAt: string;
   updatedAt: string;
 }
@@ -36,7 +60,7 @@ export interface Employee {
 export interface EmployeeListParams {
   search?: string;
   employmentType?: EmploymentType;
-  isActive?: boolean;
+  status?: EmploymentStatus;
   page?: number;
   pageSize?: number;
 }
@@ -72,7 +96,21 @@ export interface EmployeeFormPayload {
   bankAccountNumber?: string | null;
   ktpNumber?: string | null;
   phoneNumber?: string | null;
-  isActive?: boolean;
+}
+
+// Ending an employment. The date is HR's to choose: a past date records a termination late,
+// a future one serves notice, and it need not match the contract end date.
+export interface TerminatePayload {
+  endDate: string;
+  endReason: EmploymentEndReason;
+  endNote?: string | null;
+}
+
+export interface RehirePayload {
+  startDate: string;
+  contractStartDate?: string | null;
+  contractEndDate?: string | null;
+  fullTimeSince?: string | null;
 }
 
 export function useEmployees(params: EmployeeListParams) {
@@ -148,4 +186,39 @@ export async function downloadContract(id: number, fileName: string): Promise<vo
   link.click();
   link.remove();
   window.URL.revokeObjectURL(url);
+}
+
+export function useTerminateEmployee() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, payload }: { id: number; payload: TerminatePayload }) => {
+      const { data } = await apiClient.post<Employee>(`/employees/${id}/terminate`, payload);
+      return data;
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['employees'] });
+      queryClient.invalidateQueries({ queryKey: ['employee', variables.id] });
+      // Termination moves headcount, leave balances and the payroll preview.
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['leave-balances'] });
+      queryClient.invalidateQueries({ queryKey: ['payroll'] });
+    },
+  });
+}
+
+export function useRehireEmployee() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, payload }: { id: number; payload: RehirePayload }) => {
+      const { data } = await apiClient.post<Employee>(`/employees/${id}/rehire`, payload);
+      return data;
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['employees'] });
+      queryClient.invalidateQueries({ queryKey: ['employee', variables.id] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['leave-balances'] });
+      queryClient.invalidateQueries({ queryKey: ['payroll'] });
+    },
+  });
 }

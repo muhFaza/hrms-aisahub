@@ -5,6 +5,7 @@ import {
   CalendarOutlined,
   ClockCircleOutlined,
   DollarOutlined,
+  SolutionOutlined,
   StopOutlined,
 } from '@ant-design/icons';
 import type { AppNotification, NotificationType } from '../api/notifications';
@@ -152,6 +153,31 @@ const builders: Record<NotificationType, (payload: Record<string, unknown>) => N
       ]),
       link: '/my-payslips',
       icon: <BankOutlined />,
+    };
+  },
+  CONTRACT_ENDING: (payload) => {
+    const name = text(payload, 'employeeNickname') ?? text(payload, 'employeeName');
+    const endDate = text(payload, 'contractEndDate');
+    const daysRemaining = amount(payload, 'daysRemaining');
+    // Negative days means the contract already lapsed — more urgent, not less, so it is
+    // called out rather than shown as a countdown to a date in the past.
+    const lapsed = daysRemaining !== null && daysRemaining < 0;
+    return {
+      title: lapsed
+        ? `${name ?? 'An employee'}'s contract has ended`
+        : `${name ?? 'An employee'}'s contract is ending`,
+      description: joinParts([
+        endDate ? formatDate(endDate) : null,
+        daysRemaining === null
+          ? null
+          : lapsed
+            ? `${Math.abs(daysRemaining)} day(s) ago`
+            : `in ${daysRemaining} day(s)`,
+      ]),
+      link: amount(payload, 'employeeId') !== null
+        ? `/employees/${amount(payload, 'employeeId')}`
+        : '/employees',
+      icon: <SolutionOutlined />,
     };
   },
   REQUEST_CANCELLED: (payload) => {

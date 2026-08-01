@@ -3,6 +3,7 @@ import { ArrowLeftOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useEmployee } from '../../api/employees';
 import EmployeeDescriptions from './EmployeeDescriptions';
+import EmploymentHistoryCard from './EmploymentHistoryCard';
 
 export default function EmployeeDetailPage() {
   const navigate = useNavigate();
@@ -33,6 +34,7 @@ export default function EmployeeDetailPage() {
           </Typography.Title>
         </div>
         <EmployeeDescriptions employee={employee} />
+        <EmploymentHistoryCard employee={employee} />
       </Space>
     </Card>
   );

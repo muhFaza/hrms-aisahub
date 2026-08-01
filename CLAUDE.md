@@ -73,6 +73,22 @@ recreate. Do not add `roleId` to the update path.
 day on any non-UTC machine and silently corrupts accrual periods, working-day counts and
 period membership. Use the existing helpers.
 
+**Employment is a sequence of `Employment` rows, not a boolean.** There is no
+`Employee.isActive`. "Currently employed" means an open `Employment` (`endDate IS NULL`), and
+a partial unique index enforces at most one open row per employee. `endDate` is the **last
+day of employment, inclusive** — terminated effective 30 September means 30 September is
+worked and paid. Status, access and payroll eligibility all derive from this; never add a
+status column back.
+
+**Leave accrual is scoped to an employment.** `LeaveAccrual.employmentId` is what makes a
+rehire start from zero. Widening an accrual query back to `employeeId` re-opens the bug where
+reactivating a long-departed employee minted a leave day for every month they were away.
+
+**"Currently employed" has exactly one definition: `currentlyEmployedFilter()`.** Open, or
+serving out a notice period. Never hand-write `endDate: null` as an employment filter — six
+sites once disagreed about this, and the two that got it wrong stopped accrual the moment a
+future termination was recorded and refused leave to somebody auth had just admitted.
+
 **A finalized payroll month is frozen.** `assertPeriodEditable` guards create, update,
 delete and review across leave, overtime, reimbursements and daily logs. Any new
 dated-record mutation must call it.
@@ -113,7 +129,7 @@ status code — Zod strips unknown keys silently, so a 200 does not prove a fiel
 
 ## Deleting a User
 
-Never a plain `DELETE`. Four foreign keys pointing at `User` are `ON DELETE SET NULL`:
+Never a plain `DELETE`. Five foreign keys pointing at `User` are `ON DELETE SET NULL`:
 
 | Column | What silently disappears |
 | --- | --- |
@@ -121,8 +137,9 @@ Never a plain `DELETE`. Four foreign keys pointing at `User` are `ON DELETE SET 
 | `Reimbursement.reviewedById` | who approved the claim |
 | `PayrollPeriod.finalizedById` | who finalized the payroll month |
 | `Notification.resolvedById` | who handled the request behind a notification |
+| `Employment.recordedById` | who terminated or rehired somebody |
 
-Deleting a user nulls all four without raising an error — audit trail destroyed on a
+Deleting a user nulls all five without raising an error — audit trail destroyed on a
 payroll system, in silence. Reassign them first.
 `prisma/migrations/20260730120000_remove_seeded_owner_account` is the reference
 implementation; it also reassigns `LeaveRequest.reviewedById`, a column that no longer

@@ -33,9 +33,15 @@ export default function EmployeeDescriptions({ employee }: { employee: Employee 
         </Descriptions.Item>
         <Descriptions.Item label="Join Date">{formatDate(employee.joinDate)}</Descriptions.Item>
         <Descriptions.Item label="Status">
-          <Tag color={employee.isActive ? 'green' : 'red'}>
-            {employee.isActive ? 'Active' : 'Inactive'}
+          {/* An active employee with a termination date is serving notice — "Active from
+              14 Aug" read as though that was when they STARTED, when it is when they leave. */}
+          <Tag color={employee.status === 'ACTIVE' ? 'green' : 'red'}>
+            {employee.status === 'ACTIVE' ? 'Active' : 'Terminated'}
           </Tag>
+          {employee.terminationDate &&
+            (employee.status === 'ACTIVE'
+              ? `leaving ${formatDate(employee.terminationDate)}`
+              : `left ${formatDate(employee.terminationDate)}`)}
         </Descriptions.Item>
       </Descriptions>
 

@@ -3,7 +3,11 @@ import { Button, Card, Input, Select, Space, Table, Tag, Typography } from 'antd
 import { PlusOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
-import { useEmployees, type Employee } from '../../api/employees';
+import {
+  useEmployees,
+  type Employee,
+  type EmploymentStatus,
+} from '../../api/employees';
 import type { EmploymentType } from '../../api/auth';
 import { formatDate } from '../../lib/format';
 import EmployeeFormDrawer from './EmployeeFormDrawer';
@@ -12,6 +16,9 @@ export default function EmployeesListPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [employmentType, setEmploymentType] = useState<EmploymentType | undefined>();
+  // Defaults to undefined (everyone). Terminated employees stay listed rather than
+  // disappearing — their payslip history and employment record are still the company's.
+  const [status, setStatus] = useState<EmploymentStatus | undefined>();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -20,6 +27,7 @@ export default function EmployeesListPage() {
   const { data, isLoading } = useEmployees({
     search: search || undefined,
     employmentType,
+    status,
     page,
     pageSize,
   });
@@ -59,9 +67,11 @@ export default function EmployeesListPage() {
     },
     {
       title: 'Status',
-      dataIndex: 'isActive',
-      render: (value: boolean) => (
-        <Tag color={value ? 'green' : 'red'}>{value ? 'Active' : 'Inactive'}</Tag>
+      dataIndex: 'status',
+      render: (value: EmploymentStatus, record) => (
+        <Tag color={value === 'ACTIVE' ? 'green' : 'red'}>
+          {value === 'ACTIVE' ? 'Active' : `Left ${formatDate(record.terminationDate)}`}
+        </Tag>
       ),
     },
     {
@@ -108,6 +118,20 @@ export default function EmployeesListPage() {
           options={[
             { value: 'FULL_TIME', label: 'Full-time' },
             { value: 'PART_TIME', label: 'Part-time' },
+          ]}
+        />
+        <Select
+          allowClear
+          placeholder="Status"
+          style={{ width: 160 }}
+          value={status}
+          onChange={(value) => {
+            setStatus(value);
+            setPage(1);
+          }}
+          options={[
+            { value: 'ACTIVE', label: 'Active' },
+            { value: 'TERMINATED', label: 'Terminated' },
           ]}
         />
       </Space>

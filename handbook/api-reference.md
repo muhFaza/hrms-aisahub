@@ -1,6 +1,6 @@
 # API reference
 
-Base path for everything: **`/api/v1`**. 50 endpoints across eleven modules.
+Base path for everything: **`/api/v1`**. 52 endpoints across eleven modules.
 
 Authentication is a bearer token: `Authorization: Bearer <jwt>`. Every route except
 `POST /auth/login` and `GET /health` requires one.
@@ -58,7 +58,7 @@ account.
 
 | Method | Path | Role | Purpose |
 | --- | --- | --- | --- |
-| GET | `/employees` | HR | Paginated list; search / employmentType / isActive filters |
+| GET | `/employees` | HR | Paginated list; search / employmentType / status filters |
 | POST | `/employees` | HR | Create |
 | GET | `/employees/:id` | HR **or** own record | Detail |
 | PUT | `/employees/:id` | HR | Full replace |
@@ -75,7 +75,13 @@ accrual at today, leaving full-time clears it, and an update that does not chang
 type preserves the stored value. Supply it explicitly to correct a conversion recorded late.
 A part-time employee never carries an anchor, whatever the body says.
 
-There is no delete. Employees are deactivated via `isActive`.
+There is no delete and no `isActive`. Employment ends through
+`POST /employees/:id/terminate`, which records an effective date and a reason;
+`POST /employees/:id/rehire` opens a fresh employment for somebody who has left. Both are
+HR-only. The employee payload carries a derived `status` (`ACTIVE` / `TERMINATED`), a
+`terminationDate`, and `employments[]` — the full history, newest first. The flat
+`contractStartDate` / `contractEndDate` / `contractFilePath` / `fullTimeSince` fields are the
+**current** employment's, kept flat so existing clients did not have to change.
 
 ## `holidays`
 

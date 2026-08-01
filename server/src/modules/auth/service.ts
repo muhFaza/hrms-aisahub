@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/prisma';
 import { env } from '../../config/env';
 import { HttpError } from '../../lib/httpError';
+import { employmentStatusAsOf } from '../../lib/employment';
 import type { ChangePasswordInput, LoginInput } from './schemas';
 
 // Relations loaded to build the client-facing user shape (login + /me).
@@ -48,6 +49,24 @@ export async function login(input: LoginInput) {
   }
   if (!user.isActive) {
     throw new HttpError(401, 'Account is deactivated');
+  }
+
+  // Termination has to be refused HERE as well as in the middleware. The middleware rejects
+  // the token on every subsequent request, so a terminated employee could reach nothing —
+  // but login itself would still answer 200 with a working-looking token, which reads as a
+  // successful sign-in that then fails mysteriously on the next click.
+  //
+  // Checked after the password, like the deactivated-account message above, so it cannot be
+  // used to probe who has left.
+  if (user.employee) {
+    const employment = await prisma.employment.findFirst({
+      where: { employeeId: user.employee.id },
+      orderBy: [{ endDate: { sort: 'desc', nulls: 'first' } }, { startDate: 'desc' }],
+      select: { startDate: true, endDate: true },
+    });
+    if (employmentStatusAsOf(employment, new Date()) === 'TERMINATED') {
+      throw new HttpError(401, 'Employment has ended');
+    }
   }
 
   const token = jwt.sign(

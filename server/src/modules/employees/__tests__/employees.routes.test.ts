@@ -2,7 +2,13 @@ import request from 'supertest';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../../../app';
 import { prisma } from '../../../config/prisma';
-import { createEmployee, createUser, resetDb, signToken } from '../../../__tests__/helpers/factories';
+import {
+  createEmployee,
+  createUser,
+  currentEmployment,
+  resetDb,
+  signToken,
+} from '../../../__tests__/helpers/factories';
 
 // Managing employees is an HR-only capability, so these go through the full middleware chain
 // rather than calling the service directly.
@@ -84,7 +90,7 @@ describe('employee routes — fullTimeSince anchor on create', () => {
       .send(fullTimePayload());
     expect(res.status).toBe(201);
 
-    const stored = await prisma.employee.findUniqueOrThrow({ where: { id: res.body.id } });
+    const stored = await currentEmployment(res.body.id);
     expect(isoDay(stored.fullTimeSince)).toBe('2025-01-06');
   });
 
@@ -95,7 +101,7 @@ describe('employee routes — fullTimeSince anchor on create', () => {
       .send(partTimePayload());
     expect(res.status).toBe(201);
 
-    const stored = await prisma.employee.findUniqueOrThrow({ where: { id: res.body.id } });
+    const stored = await currentEmployment(res.body.id);
     expect(stored.fullTimeSince).toBeNull();
   });
 });
@@ -113,7 +119,7 @@ describe('employee routes — fullTimeSince anchor on employment type change', (
       .send(fullTimePayload());
     expect(res.status).toBe(200);
 
-    const stored = await prisma.employee.findUniqueOrThrow({ where: { id: employee.id } });
+    const stored = await currentEmployment(employee.id);
     // Today, not the join date — they did not earn leave while part-time.
     expect(isoDay(stored.fullTimeSince)).toBe('2026-07-15');
   });
@@ -127,7 +133,7 @@ describe('employee routes — fullTimeSince anchor on employment type change', (
       .send(partTimePayload());
     expect(res.status).toBe(200);
 
-    const stored = await prisma.employee.findUniqueOrThrow({ where: { id: employee.id } });
+    const stored = await currentEmployment(employee.id);
     expect(stored.fullTimeSince).toBeNull();
   });
 
@@ -143,9 +149,12 @@ describe('employee routes — fullTimeSince anchor on employment type change', (
       .send(fullTimePayload({ position: 'Senior Engineer' }));
     expect(res.status).toBe(200);
 
+    // The anchor lives on the employment; position is still an employee field.
+    const employment = await currentEmployment(employee.id);
+    // The blind buildData overwrite must not reset this to the employment start date.
+    expect(isoDay(employment.fullTimeSince)).toBe('2026-03-01');
+
     const stored = await prisma.employee.findUniqueOrThrow({ where: { id: employee.id } });
-    // The blind buildData overwrite must not reset this to the join date.
-    expect(isoDay(stored.fullTimeSince)).toBe('2026-03-01');
     expect(stored.position).toBe('Senior Engineer');
   });
 
@@ -162,7 +171,7 @@ describe('employee routes — fullTimeSince anchor on employment type change', (
       .send(fullTimePayload({ fullTimeSince: '2026-06-01T00:00:00.000Z' }));
     expect(res.status).toBe(200);
 
-    const stored = await prisma.employee.findUniqueOrThrow({ where: { id: employee.id } });
+    const stored = await currentEmployment(employee.id);
     expect(isoDay(stored.fullTimeSince)).toBe('2026-06-01');
   });
 
@@ -182,7 +191,7 @@ describe('employee routes — fullTimeSince anchor on employment type change', (
       .send(fullTimePayload({ fullTimeSince: '2026-06-01T17:30:00.000Z' }));
     expect(res.status).toBe(200);
 
-    const stored = await prisma.employee.findUniqueOrThrow({ where: { id: employee.id } });
+    const stored = await currentEmployment(employee.id);
     expect(stored.fullTimeSince?.toISOString()).toBe('2026-06-01T00:00:00.000Z');
   });
 
@@ -198,7 +207,7 @@ describe('employee routes — fullTimeSince anchor on employment type change', (
       .send(fullTimePayload({ fullTimeSince: '2026-06-01' }));
     expect(res.status).toBe(200);
 
-    const stored = await prisma.employee.findUniqueOrThrow({ where: { id: employee.id } });
+    const stored = await currentEmployment(employee.id);
     expect(stored.fullTimeSince?.toISOString()).toBe('2026-06-01T00:00:00.000Z');
   });
 
@@ -213,7 +222,7 @@ describe('employee routes — fullTimeSince anchor on employment type change', (
 
     // Assert on stored state: a part-timer must never carry an accrual anchor, whatever the
     // request body said.
-    const stored = await prisma.employee.findUniqueOrThrow({ where: { id: employee.id } });
+    const stored = await currentEmployment(employee.id);
     expect(stored.fullTimeSince).toBeNull();
   });
 });

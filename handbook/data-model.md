@@ -31,18 +31,47 @@ The HR master record: identity, contract, compensation, banking.
 Notable fields: `employmentType` (required, no default — drives all salary logic),
 `monthlySalary` and `hourlyRate` (both nullable `Decimal(15,2)`; which one applies depends
 on employment type), `thrEligible` (Tunjangan Hari Raya — the Indonesian religious-holiday
-bonus), `ktpNumber` (national ID, stored as plain text), and `contractFilePath`.
+bonus), and `ktpNumber` (national ID, stored as plain text).
 
-`fullTimeSince` (nullable) is the **paid-leave accrual anchor** — accrual runs from this date,
-not `joinDate`, so a part-timer promoted to full-time does not earn days retroactively for
-the months they were part-time. `NULL` for part-timers. The service derives it from the
-`employmentType` transition; see [domain-rules.md](domain-rules.md).
+There is **no `isActive`**, and no contract dates or accrual anchor. Every dated fact that
+describes one engagement lives on `Employment`. `joinDate` stays here as the **original**
+first join, so tenure survives a rehire even though each engagement carries its own
+`startDate`.
+
+### `Employment`
+One row per continuous stretch of employment. A rehire opens a new row rather than editing
+the old one, which is what makes the history auditable and keeps a returning employee's
+leave from inheriting the previous engagement's accrual.
+
+| Field | Notes |
+| --- | --- |
+| `startDate` | Join or rehire date for this engagement |
+| `endDate` | **Last day of employment, inclusive.** `NULL` = currently employed. A future date is a served notice period |
+| `endReason` | `CONTRACT_END` / `RESIGNATION` / `DISMISSAL` / `OTHER`. `NULL` only on rows the backfill migration reconstructed |
+| `endNote` | Free text |
+| `contractStartDate`, `contractEndDate`, `contractFilePath` | The contract window **for this engagement** |
+| `fullTimeSince` | Paid-leave accrual anchor for this engagement — accrual runs from here, never from `startDate` or `joinDate` |
+| `leaveBalanceAtEnd` | Balance frozen at termination. Recorded, then forfeited — not paid out |
+| `recordedById` | `ON DELETE SET NULL`. Who terminated or rehired |
+
+A **partial unique index** on `(employeeId) WHERE endDate IS NULL` enforces at most one open
+employment per employee. That constraint is what makes "currently employed" unambiguous
+rather than a convention the application has to maintain.
+
+Status is derived, never stored: `ACTIVE` while the latest employment is open or its
+`endDate` has not yet passed, `TERMINATED` after. `lib/employment.ts` holds the arithmetic;
+a **missing** employment resolves to `TERMINATED`, because denying access on corrupt data is
+the safer failure on a payroll system.
 
 `Employee.email` is separate from `User.email` and is **not unique** — it is the payslip
 delivery address.
 
 ### `LeaveAccrual`
-One row per employee per month, recording the paid-leave day earned and how much of it has
+Scoped to an `Employment` via `employmentId`, with `@@unique([employmentId, period])` — not
+`employeeId`. That scoping is what makes a rehire start from zero, and it also stops a
+terminate-and-rehire inside one month colliding on `(employeeId, period)` and losing a row.
+
+One row per employment per month, recording the paid-leave day earned and how much of it has
 been spent.
 
 | Field | Notes |
@@ -155,7 +184,8 @@ Three delete behaviours, and the difference matters:
 - **`RESTRICT`** on every `employeeId` and `payrollPeriodId`. You cannot delete an employee
   who has any accrual, log, request or payslip. This is why employees are deactivated, not
   deleted.
-- **`SET NULL`** on all four nullable user references: `Overtime.reviewedById`,
+- **`SET NULL`** on all five nullable user references: `Employment.recordedById`,
+  `Overtime.reviewedById`,
   `Reimbursement.reviewedById`, `PayrollPeriod.finalizedById` and
   `Notification.resolvedById`.
 - **`CASCADE`** on `Notification.recipientId` only. This is the one place cascading is
@@ -169,7 +199,7 @@ None of these delete rules is declared in `schema.prisma` — Prisma emits them 
 (required relation → RESTRICT, optional → SET NULL). Reading the schema alone will not
 show you this.
 
-Four columns are `SET NULL`, and every one of them destroys **audit attribution** rather
+Five columns are `SET NULL`, and every one of them destroys **audit attribution** rather
 than rows:
 
 | Column | What is lost when the referenced user is deleted |

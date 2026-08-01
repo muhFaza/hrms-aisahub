@@ -6,6 +6,7 @@ import { HttpError } from '../../lib/httpError';
 import type { AuthUser } from '../../middleware/auth';
 import { removeUploadedFile, uploadDir } from '../../middleware/upload';
 import { assertPeriodEditable } from '../../lib/periodLock';
+import { assertEmployed } from '../../lib/employmentLock';
 import { emitToEmployee, emitToHr, resolveGroup } from '../notifications/emit';
 import type {
   CreateReimbursementInput,
@@ -86,6 +87,7 @@ export async function createReimbursement(
 
   const date = toUtcDate(input.date);
   await assertPeriodEditable(date);
+  await assertEmployed(employeeId, date);
 
   // One transaction: the claim and the HR notifications land together or not at all.
   const created = await prisma.$transaction(async (tx) => {

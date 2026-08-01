@@ -8,7 +8,14 @@ import type { NotificationType, Prisma } from '@prisma/client';
 // the same transaction as the state change it describes. That is a deliberate
 // departure from the fire-and-forget convention the emails followed.
 
-export type EntityType = 'LEAVE_REQUEST' | 'OVERTIME' | 'REIMBURSEMENT' | 'PAYSLIP';
+// EMPLOYMENT is the odd one out: it groups a contract-end reminder, which describes a date
+// approaching rather than a record somebody submitted.
+export type EntityType =
+  | 'LEAVE_REQUEST'
+  | 'OVERTIME'
+  | 'REIMBURSEMENT'
+  | 'PAYSLIP'
+  | 'EMPLOYMENT';
 
 // Ties an HR fan-out together: acting on the request resolves every copy of it.
 export function groupKeyFor(entityType: EntityType, entityId: number): string {
