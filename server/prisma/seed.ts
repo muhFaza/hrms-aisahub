@@ -11,13 +11,18 @@ function d(iso: string): Date {
 
 // One accrual row per completed month from joinDate through July 2026,
 // each expiring 18 months after its accrual period (design §3 / §4).
-function buildAccruals(employeeId: number, joinDate: string): Prisma.LeaveAccrualCreateManyInput[] {
+function buildAccruals(
+  employeeId: number,
+  employmentId: number,
+  joinDate: string,
+): Prisma.LeaveAccrualCreateManyInput[] {
   const rows: Prisma.LeaveAccrualCreateManyInput[] = [];
   const last = dayjs('2026-07-01');
   let cursor = dayjs(joinDate).startOf('month');
   while (cursor.isSame(last) || cursor.isBefore(last)) {
     rows.push({
       employeeId,
+      employmentId,
       period: d(cursor.format('YYYY-MM-DD')),
       days: 1,
       daysConsumed: 0,
@@ -84,6 +89,9 @@ async function main() {
   await prisma.leaveAccrual.deleteMany();
   await prisma.holiday.deleteMany();
   await prisma.user.deleteMany();
+  // Before Employee: Employment_employeeId_fkey is ON DELETE RESTRICT, so leaving this out
+  // makes the FIRST seed succeed and every re-seed fail — including the container entrypoint.
+  await prisma.employment.deleteMany();
   await prisma.employee.deleteMany();
   await prisma.role.deleteMany();
 
@@ -105,9 +113,14 @@ async function main() {
       joinDate: d('2024-03-01'),
       position: 'Backend Engineer',
       employmentType: 'FULL_TIME',
-      fullTimeSince: d('2024-03-01'),
-      contractStartDate: d('2024-03-01'),
-      contractEndDate: d('2027-02-28'),
+      employments: {
+        create: {
+          startDate: d('2024-03-01'),
+          fullTimeSince: d('2024-03-01'),
+          contractStartDate: d('2024-03-01'),
+          contractEndDate: d('2027-02-28'),
+        },
+      },
       monthlySalary: 10_000_000,
       email: 'budi@aisahub.com',
       university: 'Universitas Indonesia',
@@ -131,9 +144,14 @@ async function main() {
       joinDate: d('2025-01-06'),
       position: 'Frontend Engineer',
       employmentType: 'FULL_TIME',
-      fullTimeSince: d('2025-01-06'),
-      contractStartDate: d('2025-01-06'),
-      contractEndDate: d('2028-01-05'),
+      employments: {
+        create: {
+          startDate: d('2025-01-06'),
+          fullTimeSince: d('2025-01-06'),
+          contractStartDate: d('2025-01-06'),
+          contractEndDate: d('2028-01-05'),
+        },
+      },
       monthlySalary: 12_000_000,
       email: 'sari@aisahub.com',
       university: 'Institut Teknologi Bandung',
@@ -158,8 +176,13 @@ async function main() {
       joinDate: d('2025-09-01'),
       position: 'Part-time Web Developer',
       employmentType: 'PART_TIME',
-      contractStartDate: d('2025-09-01'),
-      contractEndDate: d('2026-08-31'),
+      employments: {
+        create: {
+          startDate: d('2025-09-01'),
+          contractStartDate: d('2025-09-01'),
+          contractEndDate: d('2026-08-31'),
+        },
+      },
       hourlyRate: 50_000,
       email: 'andi@aisahub.com',
       university: 'Universitas Gadjah Mada',
@@ -182,8 +205,13 @@ async function main() {
       joinDate: d('2025-10-15'),
       position: 'Part-time UI Designer',
       employmentType: 'PART_TIME',
-      contractStartDate: d('2025-10-15'),
-      contractEndDate: d('2026-10-14'),
+      employments: {
+        create: {
+          startDate: d('2025-10-15'),
+          contractStartDate: d('2025-10-15'),
+          contractEndDate: d('2026-10-14'),
+        },
+      },
       hourlyRate: 60_000,
       email: 'dewi@aisahub.com',
       university: 'Universitas Padjadjaran',
@@ -201,8 +229,20 @@ async function main() {
 
   await prisma.holiday.createMany({ data: holidays });
 
+  // Accruals belong to an employment, so the seeded rows are attached to the one each
+  // full-timer was created with.
+  const budiEmployment = await prisma.employment.findFirstOrThrow({
+    where: { employeeId: budi.id },
+  });
+  const sariEmployment = await prisma.employment.findFirstOrThrow({
+    where: { employeeId: sari.id },
+  });
+
   await prisma.leaveAccrual.createMany({
-    data: [...buildAccruals(budi.id, '2024-03-01'), ...buildAccruals(sari.id, '2025-01-06')],
+    data: [
+      ...buildAccruals(budi.id, budiEmployment.id, '2024-03-01'),
+      ...buildAccruals(sari.id, sariEmployment.id, '2025-01-06'),
+    ],
   });
 
   // Sample daily logs for part-timers (June/July 2026).

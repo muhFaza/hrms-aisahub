@@ -238,10 +238,10 @@ describe('submitLeave', () => {
   });
 
   it('will not draw from an expired accrual', async () => {
-    const employee = await createEmployee({ employmentType: 'FULL_TIME', isActive: false });
+    const employee = await createEmployee({ employmentType: 'FULL_TIME', fullTimeSince: null });
     const user = await createUser({ roleName: 'EMPLOYEE', employeeId: employee.id });
-    // 5 unused days, but expired relative to the pinned "now". The employee is inactive
-    // so the accrual catch-up cannot top the balance back up.
+    // 5 unused days, but expired relative to the pinned "now". The employee has no accrual
+    // anchor, so the catch-up cannot top the balance back up.
     const accrual = await createAccrual({
       employeeId: employee.id,
       period: '2024-01-01',
@@ -430,8 +430,8 @@ describe('cancelLeave', () => {
     // Two leaves, so consumption has spilled over: A (Aug) is full and B (Dec) holds the
     // spill. Cancelling the first leave must unwind A, not B — refunding B would move a day
     // from the soon-expiring row to the long-lived one and invent spendable balance.
-    // Inactive, so the accrual catch-up cannot add rows behind these two.
-    const employee = await createEmployee({ isActive: false });
+    // No accrual anchor, so the catch-up cannot add rows behind these two.
+    const employee = await createEmployee({ fullTimeSince: null });
     const user = await createUser({ roleName: 'EMPLOYEE', employeeId: employee.id });
     const a = await createAccrual({
       employeeId: employee.id,
@@ -481,7 +481,7 @@ describe('cancelLeave', () => {
   it('refunds to live rows before expired ones', async () => {
     // The expired row carries consumption from some older leave. The cancelled leave can
     // only have drawn from the live row, so the whole refund belongs there.
-    const employee = await createEmployee({ isActive: false });
+    const employee = await createEmployee({ fullTimeSince: null });
     const user = await createUser({ roleName: 'EMPLOYEE', employeeId: employee.id });
     const expired = await createAccrual({
       employeeId: employee.id,

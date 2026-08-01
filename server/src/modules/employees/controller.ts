@@ -26,13 +26,23 @@ export async function getById(req: Request, res: Response): Promise<void> {
 }
 
 export async function create(req: Request, res: Response): Promise<void> {
-  const employee = await employeesService.createEmployee(req.body);
+  const employee = await employeesService.createEmployee(req.body, req.user!.userId);
   res.status(201).json(employee);
 }
 
 export async function update(req: Request, res: Response): Promise<void> {
   const id = Number(req.params.id);
-  res.json(await employeesService.updateEmployee(id, req.body));
+  res.json(await employeesService.updateEmployee(id, req.body, req.user!.userId));
+}
+
+export async function terminate(req: Request, res: Response): Promise<void> {
+  const id = Number(req.params.id);
+  res.json(await employeesService.terminateEmployee(id, req.body, req.user!.userId));
+}
+
+export async function rehire(req: Request, res: Response): Promise<void> {
+  const id = Number(req.params.id);
+  res.status(201).json(await employeesService.rehireEmployee(id, req.body, req.user!.userId));
 }
 
 export async function uploadContract(req: Request, res: Response): Promise<void> {

@@ -148,7 +148,8 @@ create/review/cancel. Finalizing a payroll month freezes every record dated in i
   recorded leave request can never exist without its notification, and a rolled-back
   submission leaves no orphan. Every `emit*` helper takes the transaction client as its
   first argument.
-- **Soft delete over hard delete** for employees and users (`isActive`).
+- **Soft delete over hard delete**: users via `isActive`, employees via an `Employment`
+  row with an `endDate`. Neither is ever removed.
 
 ---
 

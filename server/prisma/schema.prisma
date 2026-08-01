@@ -39,6 +39,15 @@ enum PayrollStatus {
   FINALIZED
 }
 
+// Why an employment ended. Nullable on the row: rows created by the backfill migration have
+// no recorded reason, while the terminate endpoint requires one.
+enum EmploymentEndReason {
+  CONTRACT_END
+  RESIGNATION
+  DISMISSAL
+  OTHER
+}
+
 enum NotificationType {
   LEAVE_SUBMITTED
   LEAVE_DECIDED // retained for historical rows only — leave no longer has an approval step
@@ -48,6 +57,7 @@ enum NotificationType {
   REIMBURSEMENT_DECIDED
   PAYSLIP_AVAILABLE
   REQUEST_CANCELLED
+  CONTRACT_ENDING
 }
 
 model Role {
@@ -71,6 +81,8 @@ model User {
   reviewedOvertime        Overtime[]      @relation("OvertimeReviewer")
   reviewedReimbursements  Reimbursement[] @relation("ReimbursementReviewer")
   finalizedPayrollPeriods PayrollPeriod[] @relation("PayrollFinalizer")
+  // Fifth SET NULL foreign key pointing at User — see the deletion note in CLAUDE.md.
+  recordedEmployments     Employment[]    @relation("EmploymentRecorder")
   notifications           Notification[]  @relation("NotificationRecipient")
   resolvedNotifications   Notification[]  @relation("NotificationResolver")
 }
@@ -82,12 +94,6 @@ model Employee {
   joinDate          DateTime
   position          String
   employmentType    EmploymentType
-  // Accrual anchor: paid leave is earned from the date the employee became full-time, not
-  // from joinDate. NULL for part-timers, who neither take leave nor earn it.
-  fullTimeSince     DateTime?
-  contractStartDate DateTime?
-  contractEndDate   DateTime?
-  contractFilePath  String?
   monthlySalary     Decimal?       @db.Decimal(15, 2)
   hourlyRate        Decimal?       @db.Decimal(15, 2)
   email             String?
@@ -101,10 +107,13 @@ model Employee {
   bankAccountNumber String?
   ktpNumber         String?
   phoneNumber       String?
-  isActive          Boolean        @default(true)
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
 
+  // joinDate above is the ORIGINAL first join, kept for tenure across a rehire. The dates
+  // that describe the current engagement live on Employment; there is no isActive column,
+  // because "currently employed" means "has an Employment row with endDate NULL".
+  employments    Employment[]
   user           User?
   leaveAccruals  LeaveAccrual[]
   leaveRequests  LeaveRequest[]
@@ -114,17 +123,68 @@ model Employee {
   payslips       Payslip[]
 }
 
-model LeaveAccrual {
-  id           Int      @id @default(autoincrement())
-  employeeId   Int
-  employee     Employee @relation(fields: [employeeId], references: [id])
-  period       DateTime // first day of the accrual month
-  days         Decimal  @default(1) @db.Decimal(6, 2)
-  daysConsumed Decimal  @default(0) @db.Decimal(6, 2)
-  expiresAt    DateTime // period + 18 months
-  createdAt    DateTime @default(now())
+// One row per continuous stretch of employment. A rehire opens a new row rather than
+// editing the old one, which is what makes the history auditable and keeps a returning
+// employee's leave from inheriting the previous engagement's accrual.
+//
+// Named Employment, not EmploymentPeriod: PayrollPeriod, LeaveAccrual.period and
+// assertPeriodEditable already own "period" here, and a second meaning would confuse.
+model Employment {
+  id         Int       @id @default(autoincrement())
+  employeeId Int
+  employee   Employee  @relation(fields: [employeeId], references: [id])
+  startDate  DateTime // join or rehire date, UTC midnight
+  // NULL means currently employed. A date in the future is a served notice period: the
+  // employee stays active until it arrives, with nothing scheduled to flip them.
+  endDate    DateTime?
 
-  @@unique([employeeId, period])
+  endReason EmploymentEndReason? // NULL only on rows created by the backfill migration
+  endNote   String?
+
+  // The contract window for THIS engagement. A rehire gets its own, so renewing or
+  // re-signing never overwrites the previous contract's dates or file.
+  contractStartDate DateTime?
+  contractEndDate   DateTime?
+  contractFilePath  String?
+
+  // Accrual anchor for THIS engagement: paid leave is earned from the date the employee
+  // became full-time, not from startDate. NULL for part-timers, who neither take nor earn
+  // leave. Scoping it here is what stops a rehire backfilling the months away.
+  fullTimeSince DateTime?
+
+  // Balance frozen at termination. Recorded rather than paid out — see the design doc.
+  leaveBalanceAtEnd Decimal? @db.Decimal(6, 2)
+
+  recordedById Int?
+  recordedBy   User?    @relation("EmploymentRecorder", fields: [recordedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  leaveAccruals LeaveAccrual[]
+
+  // Backs the composite foreign key from LeaveAccrual — see the migration for why.
+  @@unique([id, employeeId])
+  @@index([employeeId])
+  @@index([contractEndDate])
+}
+
+model LeaveAccrual {
+  id           Int        @id @default(autoincrement())
+  employeeId   Int
+  employee     Employee   @relation(fields: [employeeId], references: [id])
+  employmentId Int
+  // Composite: the accrual's employment must belong to the accrual's employee.
+  employment   Employment @relation(fields: [employmentId, employeeId], references: [id, employeeId])
+  period       DateTime // first day of the accrual month
+  days         Decimal    @default(1) @db.Decimal(6, 2)
+  daysConsumed Decimal    @default(0) @db.Decimal(6, 2)
+  expiresAt    DateTime // period + 18 months
+  createdAt    DateTime   @default(now())
+
+  // Scoped to the employment, not the employee: someone terminated and rehired inside one
+  // month would otherwise collide on (employeeId, period) and the second row would be lost.
+  @@unique([employmentId, period])
+  @@index([employeeId])
 }
 
 // Leave has no approval step: a stored row is leave that is taken, effective on submit.

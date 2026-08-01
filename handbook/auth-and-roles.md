@@ -39,7 +39,9 @@ Every one of these properties has a regression test in
 2. `jwt.verify` — any failure (bad signature, malformed, expired) collapses to a single 401
    *"Invalid or expired token"*, so nothing about *why* leaks.
 3. Database lookup. Missing row or `isActive === false` → 401 *"Account is inactive or no
-   longer exists"*.
+   longer exists"*. The linked employee's latest employment rides along on the same query:
+   if it has ended, 401 *"Employment has ended"*. HR accounts commonly have no linked
+   employee, so that check only runs when one exists.
 4. `req.user = { userId, roleName, employeeId }`, with `employeeId` normalized to `null`
    rather than `undefined` — downstream code branches on `null`.
 
@@ -80,7 +82,9 @@ anywhere** — HR is the only path to an account.
 - Tokens are HS256, lifetime from `JWT_EXPIRES_IN` (default 12h). `JWT_SECRET` is required
   at boot; the process refuses to start without it.
 - There is **no refresh token and no revocation list.** Revocation is the per-request
-  `isActive` lookup.
+  lookup — of `User.isActive` *and* of the employee's current employment, so terminating
+  somebody cuts their access on the very next request. A termination dated in the future
+  starts denying access the day after it passes, with nothing scheduled to flip anything.
 - The login response contains no `passwordHash`, no `isActive`, no `roleId`.
 
 ---

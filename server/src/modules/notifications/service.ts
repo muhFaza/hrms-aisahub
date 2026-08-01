@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/prisma';
 import { HttpError } from '../../lib/httpError';
+import { ensureContractRemindersUpToDate } from '../../lib/contractReminders';
 import type { ListNotificationsQuery } from './schemas';
 
 const notificationInclude = Prisma.validator<Prisma.NotificationInclude>()({
@@ -27,7 +28,19 @@ function serializeNotification(notification: NotificationRow) {
 
 // Every query is scoped to the caller's own userId — there is no path to another
 // user's notifications.
-export async function listNotifications(userId: number, query: ListNotificationsQuery) {
+export async function listNotifications(
+  userId: number,
+  query: ListNotificationsQuery,
+  roleName?: string,
+) {
+  // Contract reminders are generated lazily rather than by a scheduler, so HR opening their
+  // notifications is one of the moments the catch-up runs. Awaited, so a reminder that came
+  // due appears in this very response rather than the next one. It is a no-op the vast
+  // majority of the time — one indexed query returning nothing.
+  if (roleName === 'HR') {
+    await ensureContractRemindersUpToDate();
+  }
+
   const where: Prisma.NotificationWhereInput = { recipientId: userId };
   if (query.unreadOnly) where.readAt = null;
 

@@ -53,7 +53,8 @@ interface EmployeeFormValues {
   bankAccountNumber?: string;
   ktpNumber?: string;
   phoneNumber?: string;
-  isActive?: boolean;
+  // No isActive: employment ends through the Terminate action, which records a date and a
+  // reason, not by switching a flag off on the edit form.
 }
 
 interface Props {
@@ -94,7 +95,6 @@ function toPayload(values: EmployeeFormValues): EmployeeFormPayload {
     bankAccountNumber: values.bankAccountNumber || null,
     ktpNumber: values.ktpNumber || null,
     phoneNumber: values.phoneNumber || null,
-    isActive: values.isActive ?? true,
   };
 }
 
@@ -138,11 +138,10 @@ export default function EmployeeFormDrawer({ open, employee, onClose }: Props) {
         bankAccountNumber: employee.bankAccountNumber ?? undefined,
         ktpNumber: employee.ktpNumber ?? undefined,
         phoneNumber: employee.phoneNumber ?? undefined,
-        isActive: employee.isActive,
       });
     } else {
       form.resetFields();
-      form.setFieldsValue({ employmentType: 'FULL_TIME', thrEligible: false, isActive: true });
+      form.setFieldsValue({ employmentType: 'FULL_TIME', thrEligible: false });
     }
   }, [open, employee, form]);
 
@@ -266,11 +265,6 @@ export default function EmployeeFormDrawer({ open, employee, onClose }: Props) {
           <Col span={12}>
             <Form.Item name="joinDate" label="Join Date" rules={[{ required: true }]}>
               <DatePicker style={{ width: '100%' }} />
-            </Form.Item>
-          </Col>
-          <Col span={12}>
-            <Form.Item name="isActive" label="Active" valuePropName="checked">
-              <Switch />
             </Form.Item>
           </Col>
           {employmentType === 'FULL_TIME' && (

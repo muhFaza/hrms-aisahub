@@ -8,6 +8,7 @@ import { renderPayslip } from '../../lib/pdf/payslip';
 import { periodKey } from '../../lib/pdf/theme';
 import { renderPayoutCsv } from '../../lib/csv/payoutCsv';
 import { emitToEmployees, type EmployeeTarget } from '../notifications/emit';
+import { clipRangeToEmployments, isEmployedOnAny } from '../../lib/employment';
 import {
   computePayslipRow,
   type ComputeContext,
@@ -123,8 +124,18 @@ async function computeRows(
   const monthEnd = new Date(Date.UTC(year, month, 0));
 
   const [employees, overtimes, dailyLogs, reimbursements, leaves, holidays] = await Promise.all([
+    // Anyone whose employment overlaps the month, not merely anyone currently employed.
+    // Someone terminated on the 12th still earns twelve days of this month, and the old
+    // isActive filter had no way to say that — it erased them from the month entirely.
     prisma.employee.findMany({
-      where: { isActive: true },
+      where: {
+        employments: {
+          some: {
+            startDate: { lte: monthEnd },
+            OR: [{ endDate: null }, { endDate: { gte: monthStart } }],
+          },
+        },
+      },
       orderBy: { fullName: 'asc' },
       select: {
         id: true,
@@ -133,6 +144,13 @@ async function computeRows(
         employmentType: true,
         monthlySalary: true,
         hourlyRate: true,
+        employments: {
+          where: {
+            startDate: { lte: monthEnd },
+            OR: [{ endDate: null }, { endDate: { gte: monthStart } }],
+          },
+          select: { startDate: true, endDate: true },
+        },
       },
     }),
     prisma.overtime.findMany({
@@ -173,25 +191,42 @@ async function computeRows(
       monthlySalary: employee.monthlySalary ? Number(employee.monthlySalary) : null,
       hourlyRate: employee.hourlyRate ? Number(employee.hourlyRate) : null,
     };
+    // Everything dated is clipped to the days this employee was actually employed.
+    //
+    // Fetching by date range alone is not enough: a record can sit outside the employment,
+    // most easily when a termination is recorded late, so entries were filed for days the
+    // employee turns out not to have been employed for. Left unclipped, a sick leave running
+    // past the last day deducts salary for days nobody was being paid for, and an overtime
+    // entry dated after it pays somebody who had already left.
+    const employed = (date: Date): boolean => isEmployedOnAny(employee.employments, date);
+
     const ctx: ComputeContext = {
       overtimes: overtimes
-        .filter((o) => o.employeeId === employee.id)
+        .filter((o) => o.employeeId === employee.id && employed(o.date))
         .map((o) => ({ id: o.id, date: o.date, hours: Number(o.hours), status: o.status })),
       dailyLogs: dailyLogs
-        .filter((l) => l.employeeId === employee.id)
+        .filter((l) => l.employeeId === employee.id && employed(l.date))
         .map((l) => ({ id: l.id, date: l.date, hours: Number(l.hours) })),
       reimbursements: reimbursements
-        .filter((r) => r.employeeId === employee.id)
+        .filter((r) => r.employeeId === employee.id && employed(r.date))
         .map((r) => ({ id: r.id, date: r.date, amount: Number(r.amount), status: r.status })),
+      // Leave is a RANGE, so it is truncated rather than dropped: a record spanning the last
+      // day of employment still deducts the days that fall before it. One record can yield
+      // more than one segment if it spans a termination and a rehire.
       leaves: leaves
         .filter((s) => s.employeeId === employee.id)
-        .map((s) => ({
-          id: s.id,
-          type: s.type,
-          startDate: s.startDate,
-          endDate: s.endDate,
-        })),
+        .flatMap((s) =>
+          clipRangeToEmployments(s.startDate, s.endDate, employee.employments).map(
+            (segment) => ({
+              id: s.id,
+              type: s.type,
+              startDate: segment.start,
+              endDate: segment.end,
+            }),
+          ),
+        ),
       holidays,
+      employments: employee.employments,
       exchangeRate,
       year,
       month,

@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import dayjs from 'dayjs';
 import { prisma } from '../config/prisma';
 import { HttpError } from './httpError';
+import { accrualCutoffMonth, currentlyEmployedFilter } from './employment';
 
 // UTC-midnight Date from a 'YYYY-MM-DD' key — matches how periods are seeded (design §3).
 function utcMidnight(key: string): Date {
@@ -75,32 +76,47 @@ export function planFifoAllocation(rows: AccrualLike[], totalDays: number): Allo
   return plan;
 }
 
-// Idempotent catch-up: creates any missing monthly accrual rows for active full-timers from
-// their fullTimeSince month through the current month. One paid-leave day per completed
-// month of service, each expiring 18 months after its accrual period (design §4). Returns
-// rows created.
+// Idempotent catch-up: creates any missing monthly accrual rows for full-timers in a current
+// employment, from that employment's fullTimeSince month through the current month (or the
+// termination month, for somebody serving notice). One
+// paid-leave day per completed month of service, each expiring 18 months after its accrual
+// period (design §4). Returns rows created.
 //
-// The cursor starts at fullTimeSince, not joinDate: a part-timer later promoted to full-time
-// earns paid leave from the promotion, never retroactively for the months they were
-// part-time. fullTimeSince is NULL for part-timers, so the guard below also stops accrual for
-// anyone converted out of full-time.
+// The cursor starts at fullTimeSince, not startDate: a part-timer later promoted to
+// full-time earns paid leave from the promotion, never retroactively for the months they
+// were part-time. fullTimeSince is NULL for part-timers, so the guard below also stops
+// accrual for anyone converted out of full-time.
+//
+// Rows are scoped to the employment, and only CURRENT employments are considered (open, or
+// serving out a notice period). That is what makes a rehire start from zero: the new employment has its own fullTimeSince and its own
+// accrual rows, so the cursor cannot walk back across the gap and mint a day for every month
+// the person was not employed. Before Employment existed, reactivating a long-departed
+// employee granted them a leave day for every month they had been away.
 export async function ensureAccrualsUpToDate(employeeId?: number): Promise<number> {
-  const employees = await prisma.employee.findMany({
+  // "Currently employed" means open OR serving notice — NOT simply `endDate: null`.
+  //
+  // A termination dated in the future leaves somebody active and working, and they go on
+  // earning leave for every month they actually work. Filtering on `endDate: null` alone made
+  // the employment invisible the instant the notice was recorded, quietly costing an employee
+  // one day per month of their notice period.
+  const employments = await prisma.employment.findMany({
     where: {
-      employmentType: 'FULL_TIME',
-      isActive: true,
+      ...currentlyEmployedFilter(),
       fullTimeSince: { not: null },
-      ...(employeeId ? { id: employeeId } : {}),
+      employee: {
+        employmentType: 'FULL_TIME',
+        ...(employeeId ? { id: employeeId } : {}),
+      },
     },
-    select: { id: true, fullTimeSince: true },
+    select: { id: true, employeeId: true, fullTimeSince: true, endDate: true },
   });
 
   const currentMonth = dayjs().startOf('month');
   let created = 0;
 
-  for (const employee of employees) {
+  for (const employment of employments) {
     const existing = await prisma.leaveAccrual.findMany({
-      where: { employeeId: employee.id },
+      where: { employmentId: employment.id },
       select: { period: true },
     });
     const existingKeys = new Set(existing.map((row) => row.period.toISOString().slice(0, 10)));
@@ -108,12 +124,19 @@ export async function ensureAccrualsUpToDate(employeeId?: number): Promise<numbe
     const toCreate: Prisma.LeaveAccrualCreateManyInput[] = [];
     // Month granularity, matching the existing rule that someone joining on the 30th earns
     // that month's full day: converting mid-month earns the conversion month's day.
-    let cursor = dayjs(employee.fullTimeSince as Date).startOf('month');
-    while (cursor.isSame(currentMonth) || cursor.isBefore(currentMonth)) {
+    // Stop at the termination month for somebody serving notice — they earn the months they
+    // work, not the ones after they leave. Open employments run to the current month.
+    const cutoff = accrualCutoffMonth(employment);
+    const lastMonth =
+      cutoff && dayjs(cutoff).isBefore(currentMonth) ? dayjs(cutoff) : currentMonth;
+
+    let cursor = dayjs(employment.fullTimeSince as Date).startOf('month');
+    while (cursor.isSame(lastMonth) || cursor.isBefore(lastMonth)) {
       const key = cursor.format('YYYY-MM-DD');
       if (!existingKeys.has(key)) {
         toCreate.push({
-          employeeId: employee.id,
+          employeeId: employment.employeeId,
+          employmentId: employment.id,
           period: utcMidnight(key),
           days: 1,
           daysConsumed: 0,
@@ -159,8 +182,32 @@ export async function getBalanceBreakdown(employeeId: number): Promise<BalanceBr
   const now = new Date();
   const soonCutoff = dayjs(now).add(60, 'day').toDate();
 
-  const accruals = await prisma.leaveAccrual.findMany({
+  // Everything below is scoped to one employment — the open one, or the most recent if the
+  // employee has left. A rehired employee's balance is their new engagement's, not a running
+  // total across both.
+  const employment = await prisma.employment.findFirst({
     where: { employeeId },
+    orderBy: [{ endDate: { sort: 'desc', nulls: 'first' } }, { startDate: 'desc' }],
+    select: { id: true, startDate: true, endDate: true },
+  });
+
+  // No employment means corrupt data — the backfill gave every employee one. Report an empty
+  // balance rather than falling back to every accrual the employee has ever had.
+  if (!employment) {
+    return {
+      balance: 0,
+      accruedTotal: 0,
+      usedTotal: 0,
+      expiredTotal: 0,
+      sickTaken: 0,
+      unpaidTaken: 0,
+      expiringSoon: [],
+      rows: [],
+    };
+  }
+
+  const accruals = await prisma.leaveAccrual.findMany({
+    where: { employmentId: employment.id },
     orderBy: [{ expiresAt: 'asc' }, { period: 'asc' }],
   });
 
@@ -181,11 +228,18 @@ export async function getBalanceBreakdown(employeeId: number): Promise<BalanceBr
 
   const { balance, accruedTotal, usedTotal, expiredTotal } = computeBalance(rows, now);
 
-  // Lifetime totals per deducting type, not per-year. One groupBy rather than an aggregate
-  // per type; a type with no records is simply absent from the result.
+  // Totals per deducting type for THIS employment, not per-year and not across a rehire. One
+  // groupBy rather than an aggregate per type; a type with no records is simply absent.
   const taken = await prisma.leaveRequest.groupBy({
     by: ['type'],
-    where: { employeeId, type: { in: ['SICK', 'UNPAID'] } },
+    where: {
+      employeeId,
+      type: { in: ['SICK', 'UNPAID'] },
+      startDate: {
+        gte: employment.startDate,
+        ...(employment.endDate ? { lte: employment.endDate } : {}),
+      },
+    },
     _sum: { totalDays: true },
   });
   const takenByType = (type: 'SICK' | 'UNPAID') =>

@@ -7,6 +7,8 @@ import {
   createEmployeeSchema,
   idParamSchema,
   listEmployeesQuerySchema,
+  rehireSchema,
+  terminateSchema,
   updateEmployeeSchema,
 } from './schemas';
 import * as controller from './controller';
@@ -36,6 +38,18 @@ employeesRoutes.put(
   requireRole('HR'),
   validate({ params: idParamSchema, body: updateEmployeeSchema }),
   asyncHandler(controller.update),
+);
+employeesRoutes.post(
+  '/:id/terminate',
+  requireRole('HR'),
+  validate({ params: idParamSchema, body: terminateSchema }),
+  asyncHandler(controller.terminate),
+);
+employeesRoutes.post(
+  '/:id/rehire',
+  requireRole('HR'),
+  validate({ params: idParamSchema, body: rehireSchema }),
+  asyncHandler(controller.rehire),
 );
 employeesRoutes.post(
   '/:id/contract',

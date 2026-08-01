@@ -3,6 +3,7 @@ import { prisma } from '../../config/prisma';
 import { HttpError } from '../../lib/httpError';
 import type { AuthUser } from '../../middleware/auth';
 import { assertPeriodEditable } from '../../lib/periodLock';
+import { assertEmployed } from '../../lib/employmentLock';
 import { emitToEmployee, emitToHr, resolveGroup } from '../notifications/emit';
 import type { CreateOvertimeInput, ListOvertimeQuery, ReviewOvertimeInput } from './schemas';
 
@@ -80,6 +81,7 @@ export async function createOvertime(actor: AuthUser, input: CreateOvertimeInput
 
   const date = toUtcDate(input.date);
   await assertPeriodEditable(date);
+  await assertEmployed(employee.id, date);
 
   // At most one pending/approved overtime entry per employee per date.
   const existing = await prisma.overtime.findFirst({

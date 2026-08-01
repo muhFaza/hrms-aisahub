@@ -9,7 +9,8 @@ export type NotificationType =
   | 'REIMBURSEMENT_SUBMITTED'
   | 'REIMBURSEMENT_DECIDED'
   | 'PAYSLIP_AVAILABLE'
-  | 'REQUEST_CANCELLED';
+  | 'REQUEST_CANCELLED'
+  | 'CONTRACT_ENDING';
 
 // payload is server-stored JSON; notificationCopy reads it defensively.
 export interface AppNotification {

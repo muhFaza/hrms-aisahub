@@ -6,6 +6,7 @@ export async function list(req: Request, res: Response): Promise<void> {
   const result = await notificationsService.listNotifications(
     req.user!.userId,
     req.query as unknown as ListNotificationsQuery,
+    req.user!.roleName,
   );
   res.json(result);
 }

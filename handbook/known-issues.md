@@ -145,8 +145,6 @@ stuck record. Full detail and citations in
   be recorded into a closed month, where it will not affect the payslips already issued.
 - **The payroll lock only inspects a leave record's start date.** Leave spanning a closed
   month into an open one is judged solely by where it starts.
-- **Payroll has no proration.** Every active employee gets a full month's salary regardless
-  of join date or contract end.
 - **Unused accrual days expire silently** and cannot be reclaimed.
 - **THR is a flag with no rule behind it** — statutory in Indonesia, never computed here.
 

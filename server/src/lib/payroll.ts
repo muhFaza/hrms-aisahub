@@ -7,6 +7,13 @@ import {
   toDateKey,
   type HolidayLike,
 } from './workingDays';
+import {
+  employmentSegments,
+  isFullMonth,
+  prorateMonth,
+  type DateRange,
+  type EmploymentLike,
+} from './employment';
 
 // Pure payroll math (design §4). DB access is kept out of here on purpose: the service
 // gathers rows and passes plain numbers/Dates so this stays unit-testable (Phase 6).
@@ -58,6 +65,10 @@ export interface ComputeContext {
   reimbursements: ReimbursementRecord[];
   leaves: LeaveRecord[];
   holidays: HolidayLike[];
+  // The employee's employments overlapping this month — normally one, two if they were
+  // terminated and rehired within it. Optional, and an empty or absent list means "do not
+  // prorate" rather than "pay nothing" — see prorateMonth for why that direction.
+  employments?: EmploymentLike[];
   exchangeRate: number;
   year: number;
   month: number; // 1-12
@@ -94,6 +105,14 @@ export interface PayslipDetail {
   unpaidLeaveIds: number[];
   derivedHourly?: number;
   dailyRate?: number;
+  // Present only when the employee was not employed for the whole month — a joiner, or
+  // somebody terminated part-way through. Absent on a full month, which is what the payslip
+  // PDF keys off to decide whether to show a proration line at all.
+  proration?: {
+    workedWorkingDays: number;
+    monthWorkingDays: number;
+    fullMonthSalary: number; // what basicSalary would have been without proration
+  };
   exchangeRate: number;
   // Optional: payslips finalized before the attendance summary existed have no such block, and
   // their PDFs omit the section rather than invent numbers.
@@ -208,16 +227,26 @@ function computeAttendance(
   const periodStart = new Date(Date.UTC(year, month - 1, 1));
   const periodEnd = new Date(Date.UTC(year, month, 0));
 
-  const scheduledWorkingDays = countWeekdays(periodStart, periodEnd);
-  const dayOffDays = countWeekendDays(periodStart, periodEnd);
-  const nationalHolidayDays = countHolidaysOnWeekdays(ctx.holidays, ['NATIONAL'], periodStart, periodEnd);
+  // Counted over the parts of the month the employee was actually employed, not the whole
+  // month. For anyone employed throughout — almost everybody — the segments are the whole
+  // month and nothing changes. For a joiner or a leaver it stops the block contradicting the
+  // proration line beside it: "scheduled 22 / actual 22" next to "worked 11 of 22" is exactly
+  // the sort of disagreement an employee brings to HR to dispute their pay.
+  const segments = employmentSegments(ctx.employments ?? [], periodStart, periodEnd);
+  const covered: DateRange[] =
+    segments.length > 0 ? segments : [{ start: periodStart, end: periodEnd }];
+  const sumOver = (fn: (start: Date, end: Date) => number): number =>
+    covered.reduce((total, segment) => total + fn(segment.start, segment.end), 0);
+
+  const scheduledWorkingDays = sumOver(countWeekdays);
+  const dayOffDays = sumOver(countWeekendDays);
+  const nationalHolidayDays = sumOver((start, end) =>
+    countHolidaysOnWeekdays(ctx.holidays, ['NATIONAL'], start, end),
+  );
   // SPECIAL is folded in with COMPANY: both are employer-declared days off, and splitting them
   // out would add a line that is almost always zero.
-  const companyHolidayDays = countHolidaysOnWeekdays(
-    ctx.holidays,
-    ['COMPANY', 'SPECIAL'],
-    periodStart,
-    periodEnd,
+  const companyHolidayDays = sumOver((start, end) =>
+    countHolidaysOnWeekdays(ctx.holidays, ['COMPANY', 'SPECIAL'], start, end),
   );
 
   if (employee.employmentType === 'PART_TIME') {
@@ -284,11 +313,35 @@ export function computePayslipRow(employee: PayrollEmployee, ctx: ComputeContext
     const sick = daysInPeriodByType(ctx.leaves, ['SICK'], offDayKeys, year, month);
     const unpaid = daysInPeriodByType(ctx.leaves, ['UNPAID'], offDayKeys, year, month);
 
-    basicSalary = roundIdr(monthlySalary);
+    // Proration for a partial month — someone who joined or was terminated part-way through.
+    // Dividing by the month's real working-day count can never pay more than a full month or
+    // less than zero, so no cap or floor is needed. See lib/employment.ts for why this
+    // divisor differs from the 21 used for dailyRate just above.
+    const proration = prorateMonth({
+      employments: ctx.employments ?? [],
+      monthStart: new Date(Date.UTC(year, month - 1, 1)),
+      monthEnd: new Date(Date.UTC(year, month, 0)),
+      holidayKeys: offDayKeys,
+    });
+    const partialMonth = !isFullMonth(proration);
+
+    basicSalary = roundIdr(monthlySalary * proration.factor);
+
+    // The deduction can never exceed the salary it is deducted from.
+    //
+    // This became reachable when proration landed: basicSalary now shrinks with the days
+    // worked while the leave deduction keeps the full-month `salary / 21` rate, so the two
+    // can cross. Somebody employed 1-15 September (11 working days of 22) and sick for all of
+    // them computed 11,000,000 basic against an 11,523,810 deduction — a payslip of
+    // MINUS 523,810. Zero is the answer: they were employed and absent, so they earn nothing,
+    // but a payroll system must never hand somebody a negative net.
+    //
+    // The cap is applied after the leave days themselves have been clipped to the employment
+    // (see computeRows), so it only ever absorbs the residue of the two divisors disagreeing.
     overtimePay = roundIdr(overtimeHours * derivedHourly);
     // Rounded once over the combined days, not per type: rounding each separately would let
     // the two payslip breakdown lines disagree with the total they sum to.
-    leaveDeduction = roundIdr((sick.days + unpaid.days) * dailyRate);
+    leaveDeduction = Math.min(roundIdr((sick.days + unpaid.days) * dailyRate), basicSalary);
 
     detail = {
       employmentType: 'FULL_TIME',
@@ -304,6 +357,15 @@ export function computePayslipRow(employee: PayrollEmployee, ctx: ComputeContext
       unpaidLeaveIds: unpaid.ids,
       derivedHourly: roundUsd(derivedHourly),
       dailyRate: roundIdr(dailyRate),
+      ...(partialMonth
+        ? {
+            proration: {
+              workedWorkingDays: proration.workedWorkingDays,
+              monthWorkingDays: proration.monthWorkingDays,
+              fullMonthSalary: roundIdr(monthlySalary),
+            },
+          }
+        : {}),
       exchangeRate,
       attendance,
     };

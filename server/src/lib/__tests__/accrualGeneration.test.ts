@@ -1,6 +1,11 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { prisma } from '../../config/prisma';
-import { createEmployee, resetDb, utc } from '../../__tests__/helpers/factories';
+import {
+  createEmployee,
+  currentEmployment,
+  resetDb,
+  utc,
+} from '../../__tests__/helpers/factories';
 import { ensureAccrualsUpToDate } from '../accrual';
 
 // The catch-up loop runs through the current month, so "now" has to be pinned or the expected
@@ -90,7 +95,7 @@ describe('ensureAccrualsUpToDate', () => {
   });
 
   it('accrues nothing for an inactive employee', async () => {
-    const employee = await createEmployee({ joinDate: utc('2026-05-10'), isActive: false });
+    const employee = await createEmployee({ joinDate: utc('2026-05-10'), terminated: true });
 
     await ensureAccrualsUpToDate(employee.id);
 
@@ -118,6 +123,7 @@ describe('ensureAccrualsUpToDate', () => {
     await prisma.leaveAccrual.create({
       data: {
         employeeId: employee.id,
+        employmentId: (await currentEmployment(employee.id)).id,
         period: utc('2026-01-01'),
         days: 1,
         daysConsumed: 0,

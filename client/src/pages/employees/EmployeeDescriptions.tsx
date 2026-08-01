@@ -33,9 +33,10 @@ export default function EmployeeDescriptions({ employee }: { employee: Employee 
         </Descriptions.Item>
         <Descriptions.Item label="Join Date">{formatDate(employee.joinDate)}</Descriptions.Item>
         <Descriptions.Item label="Status">
-          <Tag color={employee.isActive ? 'green' : 'red'}>
-            {employee.isActive ? 'Active' : 'Inactive'}
+          <Tag color={employee.status === 'ACTIVE' ? 'green' : 'red'}>
+            {employee.status === 'ACTIVE' ? 'Active' : 'Terminated'}
           </Tag>
+          {employee.terminationDate && ` from ${formatDate(employee.terminationDate)}`}
         </Descriptions.Item>
       </Descriptions>
 

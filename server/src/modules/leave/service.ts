@@ -6,6 +6,7 @@ import type { AuthUser } from '../../middleware/auth';
 import { countWorkingDays, offDayHolidayKeys } from '../../lib/workingDays';
 import { ensureAccrualsUpToDate, getBalanceBreakdown, planFifoAllocation } from '../../lib/accrual';
 import { assertPeriodEditable } from '../../lib/periodLock';
+import { currentlyEmployedFilter } from '../../lib/employment';
 import { emitToHr, resolveGroup } from '../notifications/emit';
 import type { CreateLeaveInput, ListLeaveQuery } from './schemas';
 
@@ -77,6 +78,19 @@ export async function submitLeave(actor: AuthUser, input: CreateLeaveInput) {
     throw new HttpError(404, 'Employee not found');
   }
 
+  // The current employment is both the terminated guard and the accrual scope.
+  // Open OR serving notice — the same definition assertEmployed uses for overtime,
+  // reimbursements and daily logs. Requiring `endDate: null` here made leave the one thing an
+  // employee on notice could not file, while every other submission still worked.
+  const employment = await prisma.employment.findFirst({
+    where: { employeeId: employee.id, ...currentlyEmployedFilter() },
+    orderBy: [{ endDate: { sort: 'desc', nulls: 'first' } }, { startDate: 'desc' }],
+    select: { id: true },
+  });
+  if (!employment) {
+    throw new HttpError(400, 'This employee is not currently employed');
+  }
+
   const startDate = toUtcDate(input.startDate);
   const endDate = toUtcDate(input.endDate);
 
@@ -130,14 +144,14 @@ export async function submitLeave(actor: AuthUser, input: CreateLeaveInput) {
     }
 
     if (input.type === 'PAID') {
-      const balance = await availableBalance(tx, employee.id);
+      const balance = await availableBalance(tx, employment.id);
       if (balance < totalDays) {
         throw new HttpError(
           400,
           `Insufficient leave balance: requested ${totalDays} day(s) but only ${balance} available`,
         );
       }
-      await consumePaidLeave(tx, employee.id, totalDays);
+      await consumePaidLeave(tx, employment.id, totalDays);
     }
 
     const request = await tx.leaveRequest.create({
@@ -173,12 +187,14 @@ export async function submitLeave(actor: AuthUser, input: CreateLeaveInput) {
 
 // Remaining days on non-expired rows, read through the caller's transaction client so the
 // guard and the consumption that follows it see the same snapshot.
+// Scoped to one employment throughout: balance, consumption and refund all belong to the
+// engagement the leave sits in, so a rehired employee cannot spend the previous one's days.
 async function availableBalance(
   tx: Prisma.TransactionClient,
-  employeeId: number,
+  employmentId: number,
 ): Promise<number> {
   const accruals = await tx.leaveAccrual.findMany({
-    where: { employeeId, expiresAt: { gt: new Date() } },
+    where: { employmentId, expiresAt: { gt: new Date() } },
     select: { days: true, daysConsumed: true },
   });
   return accruals.reduce(
@@ -190,12 +206,12 @@ async function availableBalance(
 // FIFO consumption across non-expired rows, oldest-expiring first (design §4).
 async function consumePaidLeave(
   tx: Prisma.TransactionClient,
-  employeeId: number,
+  employmentId: number,
   totalDays: number,
 ): Promise<void> {
   const now = new Date();
   const accruals = await tx.leaveAccrual.findMany({
-    where: { employeeId, expiresAt: { gt: now } },
+    where: { employmentId, expiresAt: { gt: now } },
     orderBy: [{ expiresAt: 'asc' }, { period: 'asc' }],
   });
 
@@ -238,12 +254,12 @@ async function consumePaidLeave(
 // replay. It is chosen to never invent spendable days.
 async function refundPaidLeave(
   tx: Prisma.TransactionClient,
-  employeeId: number,
+  employmentId: number,
   totalDays: number,
 ): Promise<void> {
   const now = new Date();
   const rows = await tx.leaveAccrual.findMany({
-    where: { employeeId, daysConsumed: { gt: 0 } },
+    where: { employmentId, daysConsumed: { gt: 0 } },
   });
   const byFifo = (a: { expiresAt: Date; period: Date }, b: { expiresAt: Date; period: Date }) =>
     a.expiresAt.getTime() - b.expiresAt.getTime() || a.period.getTime() - b.period.getTime();
@@ -291,7 +307,33 @@ export async function cancelLeave(id: number, actor: AuthUser) {
 
     const resolved = await resolveGroup(tx, 'LEAVE_REQUEST', id, actor.userId);
     if (request.type === 'PAID') {
-      await refundPaidLeave(tx, request.employeeId, Number(request.totalDays));
+      // Refund to the employment the leave was taken in, not simply the current one: HR can
+      // unwind a historical record, and those days belong to the engagement that spent them.
+      //
+      // The fallback matters. Leave can predate the employment that covers it — a record
+      // backdated before the start date, or imported history — and refusing to refund those
+      // would leave HR unable to correct exactly the mistakes this path exists for. The
+      // current employment is where the accrual rows are, so it is the right destination when
+      // no employment spans the dates.
+      const covering = await tx.employment.findFirst({
+        where: {
+          employeeId: request.employeeId,
+          startDate: { lte: request.startDate },
+          OR: [{ endDate: null }, { endDate: { gte: request.startDate } }],
+        },
+        select: { id: true },
+      });
+      const employment =
+        covering ??
+        (await tx.employment.findFirst({
+          where: { employeeId: request.employeeId },
+          orderBy: [{ endDate: { sort: 'desc', nulls: 'first' } }, { startDate: 'desc' }],
+          select: { id: true },
+        }));
+      if (!employment) {
+        throw new HttpError(409, 'Employee has no employment record');
+      }
+      await refundPaidLeave(tx, employment.id, Number(request.totalDays));
     }
     await tx.leaveRequest.delete({ where: { id } });
 
@@ -317,7 +359,12 @@ export async function getBalance(employeeId: number) {
 export async function getBalances() {
   await ensureAccrualsUpToDate();
   const employees = await prisma.employee.findMany({
-    where: { employmentType: 'FULL_TIME', isActive: true },
+    // Currently employed, which includes anyone serving notice — they are still accruing,
+    // so dropping them here would hide the balance HR needs to settle.
+    where: {
+      employmentType: 'FULL_TIME',
+      employments: { some: currentlyEmployedFilter() },
+    },
     orderBy: { fullName: 'asc' },
     select: { id: true, fullName: true, nickname: true },
   });

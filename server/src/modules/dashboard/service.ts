@@ -1,4 +1,5 @@
 import { prisma } from '../../config/prisma';
+import { currentlyEmployedFilter } from '../../lib/employment';
 import type { AuthUser } from '../../middleware/auth';
 import { countWorkingDays, offDayHolidayKeys } from '../../lib/workingDays';
 import { getBalanceBreakdown } from '../../lib/accrual';
@@ -68,7 +69,9 @@ export async function getHrDashboard() {
     monthHolidays,
   ] = await Promise.all([
     prisma.employee.count(),
-    prisma.employee.count({ where: { isActive: true } }),
+    // Headcount is people currently employed: an open employment, or one whose end date is
+    // still ahead of them (a served notice period still counts as on the books).
+    prisma.employee.count({ where: { employments: { some: currentlyEmployedFilter() } } }),
     prisma.employee.count({ where: { employmentType: 'FULL_TIME' } }),
     prisma.employee.count({ where: { employmentType: 'PART_TIME' } }),
     prisma.overtime.count({ where: { status: 'PENDING' } }),

@@ -59,10 +59,15 @@ the current month**, inclusive at both ends. Three consequences follow:
 The first two contradict the "per completed month of service" wording in the design document,
 the schema comment, and the code's own comment — but it is the tested, pinned behaviour.
 
-### The accrual anchor — `Employee.fullTimeSince`
+### The accrual anchor — `Employment.fullTimeSince`
 
-Accrual runs from `fullTimeSince`, **not `joinDate`**. `joinDate` remains the hire date and is
-never touched by this.
+Accrual runs from `fullTimeSince`, **not `joinDate`** and not the employment's `startDate`.
+`joinDate` remains the original hire date and is never touched by this.
+
+The anchor lives on `Employment`, and the catch-up considers **open employments only**. That
+is what stops a rehire walking the cursor back across the gap: before `Employment` existed,
+reactivating someone who had left a year ago granted them a leave day for every month they
+had been away.
 
 Before the anchor existed, the catch-up ran from `joinDate`, so a part-timer later promoted to
 full-time was granted a retroactive paid day for **every month they had been part-time**.
@@ -231,11 +236,113 @@ month, and it will not be reflected in the payslips already issued for it.
 
 ### Who gets a payslip
 
-Every employee with `isActive: true`. **No join-date, contract-date, or activity filter.**
-A part-timer with no logged hours receives a zero-value payslip.
+Every employee whose **employment overlaps the month** — not merely everyone currently
+employed. Somebody terminated on the 12th still earns twelve days of that month, and the old
+`isActive` filter had no way to say so: it erased them from the month entirely, so their
+final partial month paid nothing. A part-timer with no logged hours still receives a
+zero-value payslip.
 
-There is **no proration.** A full-timer's basic salary is their monthly salary, flat,
-regardless of when they joined or whether their contract has ended.
+### Proration
+
+A full-timer's basic salary is prorated by the working days their employment actually covers:
+
+```
+basicSalary = monthlySalary × workedWorkingDays / actualWorkingDaysInMonth
+```
+
+Dividing by the month's **real** working-day count can never pay more than a full month or
+less than zero, so it needs no cap and no floor. Someone terminated on the final working day
+of the month is paid in full. Terminate-and-rehire inside one month sums both segments.
+
+Part-timers are not prorated — they are paid per logged hour, so their logs simply stop.
+
+**The accepted inconsistency:** a day not worked because of termination is valued at
+`salary / actualWorkingDays`, while a day of sick or unpaid leave is valued at `salary / 21`
+via the hardcoded divisor in `lib/payroll.ts`. Both can appear on one payslip. Unifying them
+would change the value of every existing leave deduction, including in finalized months, so
+it was deliberately left alone.
+
+`detail.proration` is present **only** on a partial month; its absence is what the payslip
+PDF keys off to decide whether to print a proration line at all.
+
+**Everything dated is clipped to the employment before it reaches the arithmetic.** Fetching
+by date range alone is not enough — a record can sit outside the employment, most easily when
+a termination is recorded late, so entries were filed for days the employee turns out not to
+have been employed for. Leave is a range and is truncated; overtime, daily logs and
+reimbursements are dropped. Without this, a sick leave running past the last day deducts
+salary for days nobody was paid for, and overtime dated after it pays somebody who had left.
+
+**The leave deduction is capped at the basic salary.** Proration shrinks `basicSalary` with
+the days worked while the deduction keeps the full-month `/21` rate, so the two can cross:
+somebody employed 1–15 September and sick throughout computed 11,000,000 against 11,523,810
+— a payslip of *minus* 523,810. Zero is the answer, and a payroll system must never issue a
+negative net. The cap sits after the clipping above, so it only absorbs the residue of the
+two divisors disagreeing.
+
+The attendance block is also scoped to the employment, so it cannot read "scheduled 22 /
+actual 22" beside "worked 11 of 22" — the sort of contradiction an employee brings to HR to
+dispute their pay.
+
+### Termination and rehire
+
+Ending employment goes through `POST /employees/:id/terminate` with an effective date and a
+reason. The date is HR's to choose and need not match `contractEndDate` — people leave early
+and people stay on. A past date records a termination late; a future one serves notice, and
+the employee stays `ACTIVE` until it passes, with nothing scheduled to flip them.
+
+A termination dated in the future is a **notice period**, and the employee is still employed
+throughout it: they keep accruing leave for the months they work, and they can still file
+leave, overtime, reimbursements and daily logs. "Currently employed" therefore means *open or
+serving notice* everywhere — a definition that must stay consistent, since accrual and leave
+submission originally disagreed with the other three paths about it.
+
+**Every dated submission is checked against the date of the RECORD, not against today.**
+`assertEmployed(employeeId, date)` refuses overtime, reimbursements and daily logs dated
+outside any employment. Checking "employed right now" instead let somebody on notice file
+entries dated after their last day: the submission was accepted, then payroll — which selects
+by employment overlap — dropped them from that month entirely, so the hours were never paid
+and surfaced nowhere.
+
+**`Employee.joinDate` and the first `Employment.startDate` move together.** Correcting the
+join date updates both; only the earliest employment, since after a rehire the current one's
+start date is the rehire date and legitimately differs. Everything downstream reads
+`startDate`, so leaving them unsynced showed HR the corrected date while payroll used the old.
+
+Terminating also:
+
+- brings accrual up to date, then freezes the remaining balance onto
+  `Employment.leaveBalanceAtEnd` and forfeits it. It is **not** paid out; the recorded number
+  leaves a manual payout possible outside the app. The figure is computed **after** the trim
+  below, from the rows that actually survive — reading it beforehand over-reported by exactly
+  the months between the effective date and the date HR entered it;
+- deletes accrual rows granted **after** the termination month that have no days consumed —
+  these only exist when a termination is recorded late. A row with days already spent is left
+  alone, because deleting it would strand the leave record that drew from it;
+- revokes access on the next request, and stops new leave, overtime, reimbursements and
+  daily logs.
+
+`POST /employees/:id/rehire` opens a **new** employment. The previous one is never reopened:
+reopening would resurrect its accrual rows and hand back days earned under a contract that
+has ended. The rehire date must be after the previous end date, because overlapping
+employments would double-count working days in proration.
+
+### Contract-end reminders
+
+There is no scheduler in this system. `ensureContractRemindersUpToDate` follows the same
+lazy, idempotent catch-up pattern as `ensureAccrualsUpToDate`: it finds open employments
+whose `contractEndDate` falls within 30 days and have no unresolved reminder, and emits
+`CONTRACT_ENDING` to HR. It runs at boot and whenever HR fetches their notifications.
+
+Idempotency is keyed on **(recipient, employment, contract end date)**, not a timestamp.
+Extending a contract therefore **re-arms** the warning for the new date, and an HR account
+created after a reminder was issued still receives it — keying on the employment alone meant
+the first HR user "used up" the reminder and later accounts saw nothing. Contracts that have
+already lapsed are included deliberately: one that expired unnoticed is more urgent, not less.
+Somebody already serving notice is excluded — there is no contract to renew.
+
+The job takes a transaction-scoped **advisory lock**, because it runs at boot *and* on every
+HR notification fetch, so two callers can genuinely overlap. Terminating an employment
+resolves its outstanding reminder.
 
 ### The calculation
 

@@ -7,10 +7,9 @@ export const idParamSchema = z.object({
 export const listEmployeesQuerySchema = z.object({
   search: z.string().trim().optional(),
   employmentType: z.enum(['FULL_TIME', 'PART_TIME']).optional(),
-  isActive: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((value) => (value === undefined ? undefined : value === 'true')),
+  // Replaces the old isActive boolean. Status is derived from the employment record, so this
+  // filters structurally rather than reading a column.
+  status: z.enum(['ACTIVE', 'TERMINATED']).optional(),
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().positive().max(100).default(20),
 });
@@ -43,7 +42,8 @@ const employeeFields = z.object({
     .regex(/^\d{16}$/, 'KTP number must be exactly 16 digits')
     .nullish(),
   phoneNumber: z.string().trim().nullish(),
-  isActive: z.boolean().optional(),
+  // No isActive: employment status is not a field anyone sets. Ending an employment goes
+  // through POST /employees/:id/terminate, which requires a date and a reason.
 });
 
 // Full-time requires a monthly salary; part-time requires an hourly rate (design §3).
@@ -69,5 +69,25 @@ function withEmploymentRule<T extends typeof employeeFields>(schema: T) {
 export const createEmployeeSchema = withEmploymentRule(employeeFields);
 export const updateEmployeeSchema = withEmploymentRule(employeeFields);
 
+// Ending an employment. The date is required and overridable in both directions: a
+// termination can be recorded late (a past date) or served as notice (a future one), and it
+// need not match contractEndDate — people leave early and people stay on.
+export const terminateSchema = z.object({
+  endDate: z.coerce.date(),
+  endReason: z.enum(['CONTRACT_END', 'RESIGNATION', 'DISMISSAL', 'OTHER']),
+  endNote: z.string().trim().max(500).nullish(),
+});
+
+// Rehiring opens a new employment. fullTimeSince defaults to the rehire date; supplying it
+// only makes sense to correct a conversion recorded late, exactly as on the employee form.
+export const rehireSchema = z.object({
+  startDate: z.coerce.date(),
+  contractStartDate: z.coerce.date().nullish(),
+  contractEndDate: z.coerce.date().nullish(),
+  fullTimeSince: z.coerce.date().nullish(),
+});
+
 export type ListEmployeesQuery = z.infer<typeof listEmployeesQuerySchema>;
 export type EmployeeInput = z.infer<typeof createEmployeeSchema>;
+export type TerminateInput = z.infer<typeof terminateSchema>;
+export type RehireInput = z.infer<typeof rehireSchema>;

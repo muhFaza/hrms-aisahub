@@ -3,6 +3,7 @@ import { prisma } from '../../config/prisma';
 import { HttpError } from '../../lib/httpError';
 import type { AuthUser } from '../../middleware/auth';
 import { assertPeriodEditable } from '../../lib/periodLock';
+import { assertEmployed } from '../../lib/employmentLock';
 import type { DailyLogInput, ListDailyLogsQuery } from './schemas';
 
 const logInclude = Prisma.validator<Prisma.DailyLogInclude>()({
@@ -81,6 +82,7 @@ export async function createDailyLog(actor: AuthUser, input: DailyLogInput) {
 
   const date = toUtcDate(input.date);
   await assertPeriodEditable(date);
+  await assertEmployed(employee.id, date);
 
   const existing = await prisma.dailyLog.findUnique({
     where: { employeeId_date: { employeeId: employee.id, date } },
