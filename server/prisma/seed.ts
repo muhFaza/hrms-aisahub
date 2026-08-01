@@ -281,6 +281,8 @@ async function main() {
       date: d('2026-07-01'),
       amount: 350_000,
       description: 'Client meeting lunch',
+      // The demo row has no file on disk, so downloading reports "No evidence file on record".
+      evidenceFilePath: '',
       status: 'PENDING',
     },
   });

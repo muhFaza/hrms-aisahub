@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/prisma';
 import { HttpError } from '../../lib/httpError';
 import type { AuthUser } from '../../middleware/auth';
-import { uploadDir } from '../../middleware/upload';
+import { removeUploadedFile, uploadDir } from '../../middleware/upload';
 import { assertPeriodEditable } from '../../lib/periodLock';
 import { emitToEmployee, emitToHr, resolveGroup } from '../notifications/emit';
 import type {
@@ -39,13 +39,6 @@ function serializeReimbursement(reimbursement: ReimbursementRow) {
 
 function toUtcDate(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-}
-
-// Removes the stored evidence file from disk; missing files are ignored.
-function unlinkEvidence(filename: string | null): void {
-  if (!filename) return;
-  const filePath = path.join(uploadDir, path.basename(filename));
-  fs.rm(filePath, { force: true }, () => undefined);
 }
 
 export async function listReimbursements(query: ListReimbursementsQuery, actor: AuthUser) {
@@ -214,7 +207,7 @@ export async function cancelReimbursement(id: number, actor: AuthUser) {
   });
 
   // Only once the row is gone for good — the file is not recoverable.
-  unlinkEvidence(reimbursement.evidenceFilePath);
+  removeUploadedFile(reimbursement.evidenceFilePath);
 }
 
 // Resolves the on-disk evidence path for download; only HR or the owner may access it.

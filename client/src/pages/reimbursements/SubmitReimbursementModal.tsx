@@ -18,6 +18,11 @@ interface Props {
   onClose: () => void;
 }
 
+// Mirrors server/src/middleware/upload.ts, which stays the real enforcement — these only
+// spare the user a full multipart round-trip before the rejection.
+const ALLOWED_MIME_TYPES = ['application/pdf', 'image/jpeg', 'image/png'];
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
 export default function SubmitReimbursementModal({ open, onClose }: Props) {
   const [form] = Form.useForm<ReimbursementValues>();
   const submitReimbursement = useSubmitReimbursement();
@@ -90,7 +95,20 @@ export default function SubmitReimbursementModal({ open, onClose }: Props) {
           <Upload
             maxCount={1}
             accept=".pdf,.jpg,.jpeg,.png"
-            beforeUpload={() => false}
+            beforeUpload={(file) => {
+              if (!ALLOWED_MIME_TYPES.includes(file.type)) {
+                message.error('Only PDF, JPG, and PNG files are allowed');
+                return Upload.LIST_IGNORE;
+              }
+              if (file.size > MAX_UPLOAD_BYTES) {
+                message.error(
+                  `File is too large — the maximum upload size is ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB`,
+                );
+                return Upload.LIST_IGNORE;
+              }
+              // false keeps antd from auto-uploading; onFinish submits the file manually.
+              return false;
+            }}
             listType="text"
           >
             <Button icon={<UploadOutlined />}>Select File</Button>
