@@ -105,6 +105,7 @@ async function main() {
       joinDate: d('2024-03-01'),
       position: 'Backend Engineer',
       employmentType: 'FULL_TIME',
+      fullTimeSince: d('2024-03-01'),
       contractStartDate: d('2024-03-01'),
       contractEndDate: d('2027-02-28'),
       monthlySalary: 10_000_000,
@@ -130,6 +131,7 @@ async function main() {
       joinDate: d('2025-01-06'),
       position: 'Frontend Engineer',
       employmentType: 'FULL_TIME',
+      fullTimeSince: d('2025-01-06'),
       contractStartDate: d('2025-01-06'),
       contractEndDate: d('2028-01-05'),
       monthlySalary: 12_000_000,
@@ -236,8 +238,10 @@ async function main() {
     },
   });
 
-  // Leave: one SICK (no accrual impact), one PAID. Leave is taken the moment it is
-  // recorded, so the paid one draws its days from the accrual pool below.
+  // Leave: one SICK and one UNPAID (neither touches accrual; both deduct salary), one PAID.
+  // Leave is taken the moment it is recorded, so the paid one draws its days from the accrual
+  // pool below. The two deducting records share June 2026 so the seeded draft payroll period
+  // exercises a payslip with both deduction lines.
   await prisma.leaveRequest.create({
     data: {
       employeeId: budi.id,
@@ -246,6 +250,16 @@ async function main() {
       endDate: d('2026-06-16'),
       totalDays: 2,
       reason: 'Flu',
+    },
+  });
+  await prisma.leaveRequest.create({
+    data: {
+      employeeId: budi.id,
+      type: 'UNPAID',
+      startDate: d('2026-06-22'),
+      endDate: d('2026-06-23'),
+      totalDays: 2,
+      reason: 'Personal matters, balance already used',
     },
   });
   await prisma.leaveRequest.create({

@@ -29,6 +29,10 @@ export interface PayslipDetail {
   reimbursementIds: number[];
   sickDays: number;
   sickLeaveIds: number[];
+  // Optional: detail is a persisted JSON snapshot, and payslips finalized before unpaid
+  // leave existed have neither field.
+  unpaidDays?: number;
+  unpaidLeaveIds?: number[];
   derivedHourly?: number;
   dailyRate?: number;
   exchangeRate: number;

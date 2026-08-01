@@ -10,33 +10,84 @@ behaviour people will argue about.
 
 ## Leave
 
+### Leave is full-time only
+
+**Part-time employees cannot submit leave of any kind.** They are paid per logged hour, so a
+day they do not log is already unpaid and there is nothing to record. The guard is in
+`submitLeave` and covers every type.
+
+`cancelLeave` is deliberately **not** gated this way. Leave history survives an employee
+converting to part-time, and HR must still be able to unwind such a record.
+
+Historical part-time leave records are never deleted. They are audit trail, they produce no
+payroll effect, and — since nothing in the schema records employment-type history — there is
+no way to tell a part-timer's own record from one earned while they were full-time.
+
 ### Types
 
-Two, and only two: `PAID` and `SICK`. There is no maternity, unpaid, or bereavement
-category.
+Three: `PAID`, `SICK` and `UNPAID`. There is no maternity or bereavement category.
 
-| | Who can request | Consumes balance | Payroll effect |
+| | Consumes balance | Refunds on cancel | Payroll effect |
 | --- | --- | --- | --- |
-| `PAID` | Full-time only | Yes, FIFO | None |
-| `SICK` | Both types | No | Deduction — full-timers only |
+| `PAID` | Yes, FIFO | Yes | None |
+| `SICK` | No | No | Deduction |
+| `UNPAID` | No | No | Deduction |
+
+`SICK` and `UNPAID` are mechanically identical — same deduction, same absence of balance
+interaction. They differ only in what they record about *why* the day was taken, which is
+what makes the payslip breakdown worth splitting.
+
+Every balance, accrual and refund branch in the leave service keys on `type === 'PAID'`, so
+`UNPAID` needs no special-casing: it falls through exactly as `SICK` does.
 
 ### How paid leave is earned
 
 Not an annual grant. **One day per month, expiring 18 months after the month it was earned**,
 stored as one row per employee per month.
 
-Accrual rows are generated only for employees who are **full-time and active**. The
-generator runs at server boot (non-blocking), and on demand before any balance read or paid
-leave submission. There is no cron job.
+Accrual rows are generated only for employees who are **full-time, active, and have a
+`fullTimeSince` anchor**. The generator runs at server boot (non-blocking), and on demand
+before any balance read or paid leave submission. There is no cron job.
 
-The catch-up loop runs from the **start of the join month** through the **start of the
-current month**, inclusive at both ends. Two consequences follow:
+The catch-up loop runs from the **start of the `fullTimeSince` month** through the **start of
+the current month**, inclusive at both ends. Three consequences follow:
 
 - Someone hired on the 30th receives a full day that same day.
 - The current, incomplete month has already granted its day.
+- Someone converted to full-time mid-month receives that month's day.
 
-This contradicts the "per completed month of service" wording in the design document, the
-schema comment, and the code's own comment — but it is the tested, pinned behaviour.
+The first two contradict the "per completed month of service" wording in the design document,
+the schema comment, and the code's own comment — but it is the tested, pinned behaviour.
+
+### The accrual anchor — `Employee.fullTimeSince`
+
+Accrual runs from `fullTimeSince`, **not `joinDate`**. `joinDate` remains the hire date and is
+never touched by this.
+
+Before the anchor existed, the catch-up ran from `joinDate`, so a part-timer later promoted to
+full-time was granted a retroactive paid day for **every month they had been part-time**.
+
+| Transition | `fullTimeSince` becomes |
+| --- | --- |
+| Created full-time | `joinDate` |
+| Created part-time | `null` |
+| PART_TIME → FULL_TIME | today, at UTC midnight |
+| FULL_TIME → PART_TIME | `null` |
+| Update not changing employment type | preserved |
+
+HR may supply `fullTimeSince` explicitly on the employee form, which overrides the derived
+value. That is the correction path for a conversion recorded late — without it, a conversion
+effective 1 July but entered in August silently costs the employee July's day. A part-timer
+never carries an anchor regardless of what the request body says.
+
+Converting an employee twice overwrites the anchor with the later date. Rows earned in the
+earlier full-time stint already exist and are skipped by the generator's existing-keys check,
+so they survive; the part-time gap months are correctly never generated.
+
+**A leave balance cannot be monetized or transferred.** Converting someone to part-time
+therefore strands whatever balance they hold — it simply becomes unusable. There is no payout
+to settle and no conversion guard. The employee form warns HR, showing the day count, before
+the change is saved.
 
 ### Balance
 
@@ -50,7 +101,8 @@ only the **unused remainder** of expired rows.
 
 "Expiring soon" means an unexpired row with days remaining that expires within 60 days.
 
-`sickTaken` is a **lifetime** total, not per-year.
+`sickTaken` and `unpaidTaken` are **lifetime** totals, not per-year, and are independent of
+each other. `PAID` leave counts toward neither.
 
 ### FIFO consumption
 
@@ -75,7 +127,8 @@ database CHECK constraint is the final backstop.
 
 Cancelling PAID leave gives the days back, **non-expired rows first in FIFO order**
 (`expiresAt` ASC, `period` ASC), **then expired rows** in the same order. The refund runs in
-the same transaction as the delete. SICK leave refunds nothing, because it consumed nothing.
+the same transaction as the delete. SICK and UNPAID leave refund nothing, because they
+consumed nothing.
 
 Nothing records which accrual rows a given leave drew from, so this is a reconstruction, not
 a replay. It is ordered this way because it never moves a day from a soon-expiring row to a
@@ -121,7 +174,8 @@ that is taken, effective the moment it is submitted. There is no `status` column
 ### Overlap and reservation
 
 A new request is rejected if it overlaps **any** existing leave record for the same
-employee. The check spans both types — a paid and a sick record cannot cover the same dates.
+employee. The check spans all types — a paid, a sick and an unpaid record cannot cover the
+same dates.
 
 **Balance is consumed at submission, not merely checked.** The overlap check, the balance
 check, the FIFO consumption and the insert are one transaction, so two concurrent
@@ -280,9 +334,9 @@ effectively self-service pay input.
 
 Four types: `NATIONAL`, `COMPANY`, `JOINT_LEAVE` (*cuti bersama*), `SPECIAL`.
 
-**The type is purely cosmetic.** Every consumer — leave day counting, payroll sick counting,
-the dashboard — selects only the date, with no filter on type. The type surfaces solely as a
-colour and label in the UI.
+**The type is purely cosmetic.** Every consumer — leave day counting, payroll deduction
+counting, the dashboard — selects only the date, with no filter on type. The type surfaces
+solely as a colour and label in the UI.
 
 The practical consequence is worth stating plainly: **cuti bersama is a free non-working day
 here. It does not deduct from anyone's paid-leave balance.** Standard Indonesian practice
@@ -295,8 +349,8 @@ Other rules:
 - All employees can read; only HR can write.
 - Holiday mutations are **not** period-locked. Editing a holiday inside a finalized month is
   allowed, which is harmless because payslips are snapshots.
-- Holidays affect payroll only indirectly, by shrinking the sick-day count. They never
-  reduce basic salary — the ÷21 divisor is fixed.
+- Holidays affect payroll only indirectly, by shrinking the deducted sick/unpaid day count.
+  They never reduce basic salary — the ÷21 divisor is fixed.
 
 ---
 
@@ -384,7 +438,7 @@ balance of 18 out of 19 accrued. Silently lost, with no way to reclaim it.
 
 Budi, full-time, Rp 10,000,000/month. Period 2026-07, rate 16,000 (`FALLBACK`).
 Source rows: 3h approved overtime on 2026-07-10; an approved Rp 200,000 reimbursement on
-2026-07-01; sick leave spanning 2026-06-29 → 2026-07-02.
+2026-07-01; sick leave spanning 2026-06-29 → 2026-07-02; unpaid leave 2026-07-13 → 2026-07-15.
 
 | Step | Value |
 | --- | --- |
@@ -394,12 +448,19 @@ Source rows: 3h approved overtime on 2026-07-10; an approved Rp 200,000 reimburs
 | `overtimePay = 3 × 59,523.81` | **178,571** |
 | `reimbursementTotal` | **200,000** |
 | Sick days clipped to July → Jul 1 (Wed), Jul 2 (Thu) | 2 days |
-| `leaveDeduction = 2 × 476,190.48` | **952,381** |
-| `totalIdr = 10,000,000 + 178,571 + 200,000 − 952,381` | **9,426,190** |
-| `totalUsd = 9,426,190 / 16,000` | **589.14** |
+| Unpaid days → Jul 13 (Mon), Jul 14 (Tue), Jul 15 (Wed) | 3 days |
+| `leaveDeduction = (2 + 3) × 476,190.48` | **2,380,952** |
+| `totalIdr = 10,000,000 + 178,571 + 200,000 − 2,380,952` | **7,997,619** |
+| `totalUsd = 7,997,619 / 16,000` | **499.85** |
 
 The June portion of that sick leave (Jun 29–30) is not deducted here — it would deduct
 against a separate June period.
+
+**`leaveDeduction` is rounded once over the combined day count**, not per type. Rounding each
+type separately would let the two payslip breakdown lines disagree with the total they sum
+to. Because of that, the per-type rupiah figures on the payslip are *derived* for display —
+the sick line is computed and the unpaid line takes the remainder, so the two always
+reconcile exactly to the stored `leaveDeduction`.
 
 ---
 
@@ -419,10 +480,10 @@ The design document is `docs/plans/2026-07-08-hrms-design.md`. These are recorde
    "per completed month of service" in the design, the schema comment, *and* the code's own
    comment. The tests pin the current behaviour.
 
-4. **Part-time sick leave has no payroll consequence**, though the design says sick is
-   unpaid and deducts. A part-timer can record sick leave, but the part-time branch
-   hardcodes zero sick days. In practice a part-timer is already unpaid for unlogged days,
-   so the outcome is right by accident — the stated rule and the code still disagree.
+4. ~~**Part-time sick leave has no payroll consequence.**~~ **Resolved.** Leave is now a
+   full-time-only feature; a part-timer cannot record leave of any kind, so the case the
+   design and the code disagreed about can no longer arise. The part-time payslip branch
+   still hardcodes zero deducted days, which now only matters for historical records.
 
 5. **Daily logs are employee-editable**, not HR-only as the design says. Combined with the
    absence of an approval step, employees edit their own pay input.

@@ -12,7 +12,7 @@ function baseContext(overrides: Partial<ComputeContext> = {}): ComputeContext {
     overtimes: [],
     dailyLogs: [],
     reimbursements: [],
-    sickLeaves: [],
+    deductibleLeaves: [],
     holidays: [],
     exchangeRate: RATE,
     year: 2026,
@@ -96,7 +96,7 @@ describe('computePayslipRow — full-time', () => {
       fullTime,
       baseContext({
         // Jun 29 – Jul 2; only Jul 1 (Wed) and Jul 2 (Thu) fall in the period → 2 days.
-        sickLeaves: [
+        deductibleLeaves: [
           {
             id: 7,
             type: 'SICK',
@@ -110,6 +110,91 @@ describe('computePayslipRow — full-time', () => {
     // dailyRate = 10,000,000 / 21 = 476,190.476…; ×2 = 952,380.95 → 952,381.
     expect(row.leaveDeduction).toBe(952_381);
     expect(row.totalIdr).toBe(10_000_000 - 952_381);
+  });
+
+  it('deducts unpaid leave on the same mechanics as sick leave', () => {
+    const row = computePayslipRow(
+      fullTime,
+      baseContext({
+        // Jul 6 (Mon) – Jul 8 (Wed) → 3 working days.
+        deductibleLeaves: [
+          { id: 9, type: 'UNPAID', startDate: d('2026-07-06'), endDate: d('2026-07-08') },
+        ],
+      }),
+    );
+    expect(row.detail.unpaidDays).toBe(3);
+    expect(row.detail.unpaidLeaveIds).toEqual([9]);
+    expect(row.detail.sickDays).toBe(0);
+    // 476,190.476… × 3 = 1,428,571.43 → 1,428,571.
+    expect(row.leaveDeduction).toBe(1_428_571);
+    expect(row.totalIdr).toBe(10_000_000 - 1_428_571);
+  });
+
+  it('excludes weekends and holidays from unpaid leave', () => {
+    const row = computePayslipRow(
+      fullTime,
+      baseContext({
+        // Jul 3 (Fri) – Jul 8 (Wed): Sat 4 and Sun 5 drop out, Jul 6 is a holiday →
+        // Jul 3, 7, 8 remain = 3 days.
+        deductibleLeaves: [
+          { id: 1, type: 'UNPAID', startDate: d('2026-07-03'), endDate: d('2026-07-08') },
+        ],
+        holidays: [d('2026-07-06')],
+      }),
+    );
+    expect(row.detail.unpaidDays).toBe(3);
+  });
+
+  it('clips unpaid leave to the period for a cross-month request', () => {
+    const row = computePayslipRow(
+      fullTime,
+      baseContext({
+        // Jun 29 – Jul 2; only Jul 1 (Wed) and Jul 2 (Thu) fall in the period.
+        deductibleLeaves: [
+          { id: 4, type: 'UNPAID', startDate: d('2026-06-29'), endDate: d('2026-07-02') },
+        ],
+      }),
+    );
+    expect(row.detail.unpaidDays).toBe(2);
+    expect(row.leaveDeduction).toBe(952_381);
+  });
+
+  it('sums sick and unpaid into one deduction that the two lines reconcile to', () => {
+    const row = computePayslipRow(
+      fullTime,
+      baseContext({
+        deductibleLeaves: [
+          // Jul 6 (Mon) – Jul 7 (Tue) → 2 sick days.
+          { id: 1, type: 'SICK', startDate: d('2026-07-06'), endDate: d('2026-07-07') },
+          // Jul 13 (Mon) – Jul 15 (Wed) → 3 unpaid days.
+          { id: 2, type: 'UNPAID', startDate: d('2026-07-13'), endDate: d('2026-07-15') },
+        ],
+      }),
+    );
+    expect(row.detail.sickDays).toBe(2);
+    expect(row.detail.unpaidDays).toBe(3);
+    expect(row.detail.sickLeaveIds).toEqual([1]);
+    expect(row.detail.unpaidLeaveIds).toEqual([2]);
+    // Rounded once over 5 combined days: 476,190.476… × 5 = 2,380,952.38 → 2,380,952.
+    // Rounding each type separately would give 952,381 + 1,428,571 = 2,380,952 here, but the
+    // combined round is what the payslip breakdown reconciles against.
+    expect(row.leaveDeduction).toBe(2_380_952);
+    expect(row.totalIdr).toBe(10_000_000 - 2_380_952);
+  });
+
+  it('ignores PAID leave entirely when computing the deduction', () => {
+    const row = computePayslipRow(
+      fullTime,
+      baseContext({
+        deductibleLeaves: [
+          { id: 3, type: 'PAID', startDate: d('2026-07-06'), endDate: d('2026-07-08') },
+        ],
+      }),
+    );
+    expect(row.detail.sickDays).toBe(0);
+    expect(row.detail.unpaidDays).toBe(0);
+    expect(row.leaveDeduction).toBe(0);
+    expect(row.totalIdr).toBe(10_000_000);
   });
 });
 
@@ -136,5 +221,26 @@ describe('computePayslipRow — part-time', () => {
     expect(row.basicSalary).toBe(0);
     expect(row.totalIdr).toBe(0);
     expect(row.totalUsd).toBe(0);
+  });
+
+  // Part-timers can no longer record leave at all, but historical records survive for HR to
+  // audit. They must never produce a deduction: an hourly employee is already unpaid for a
+  // day they did not log.
+  it('never deducts for a part-timer, even with historical leave records', () => {
+    const row = computePayslipRow(
+      partTime,
+      baseContext({
+        dailyLogs: [{ id: 1, date: d('2026-07-01'), hours: 8 }],
+        deductibleLeaves: [
+          { id: 1, type: 'SICK', startDate: d('2026-07-06'), endDate: d('2026-07-07') },
+          { id: 2, type: 'UNPAID', startDate: d('2026-07-13'), endDate: d('2026-07-15') },
+        ],
+      }),
+    );
+    expect(row.detail.sickDays).toBe(0);
+    expect(row.detail.unpaidDays).toBe(0);
+    expect(row.detail.unpaidLeaveIds).toEqual([]);
+    expect(row.leaveDeduction).toBe(0);
+    expect(row.totalIdr).toBe(400_000);
   });
 });

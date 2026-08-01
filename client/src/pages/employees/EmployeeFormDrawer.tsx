@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Button,
+  Checkbox,
   Col,
   DatePicker,
   Divider,
@@ -8,10 +9,12 @@ import {
   Form,
   Input,
   InputNumber,
+  Modal,
   Row,
   Select,
   Space,
   Switch,
+  Typography,
   Upload,
   message,
 } from 'antd';
@@ -25,6 +28,7 @@ import {
   type Employee,
   type EmployeeFormPayload,
 } from '../../api/employees';
+import { useLeaveBalance } from '../../api/leave';
 import type { EmploymentType } from '../../api/auth';
 
 interface EmployeeFormValues {
@@ -33,6 +37,7 @@ interface EmployeeFormValues {
   joinDate: Dayjs;
   position: string;
   employmentType: EmploymentType;
+  fullTimeSince?: Dayjs;
   contractStartDate?: Dayjs;
   contractEndDate?: Dayjs;
   monthlySalary?: number;
@@ -65,6 +70,15 @@ function toPayload(values: EmployeeFormValues): EmployeeFormPayload {
     joinDate: values.joinDate.toISOString(),
     position: values.position,
     employmentType: values.employmentType,
+    // Sent as a plain calendar day, NOT toISOString(): the picker yields local midnight, so an
+    // ISO string from a UTC+7 client is the previous day in UTC. That shifts the accrual anchor
+    // a whole month whenever the picked date is the 1st, granting a spurious paid-leave day.
+    // A date-only string parses as UTC midnight, which is what the anchor must be.
+    //
+    // Omitted (undefined) rather than null when blank, so the server derives it from the
+    // employmentType transition instead of clearing the anchor.
+    fullTimeSince:
+      isFullTime && values.fullTimeSince ? values.fullTimeSince.format('YYYY-MM-DD') : undefined,
     contractStartDate: values.contractStartDate ? values.contractStartDate.toISOString() : null,
     contractEndDate: values.contractEndDate ? values.contractEndDate.toISOString() : null,
     monthlySalary: isFullTime ? (values.monthlySalary ?? null) : null,
@@ -92,6 +106,12 @@ export default function EmployeeFormDrawer({ open, employee, onClose }: Props) {
   const uploadContract = useUploadContract();
   const isEdit = employee !== null;
 
+  // Staged values for the employment-type change confirmation; nothing is sent until it is
+  // acknowledged. Mirrors the two-step confirmation in RequestLeaveModal.
+  const [pendingValues, setPendingValues] = useState<EmployeeFormValues | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
+  const { data: balance } = useLeaveBalance(employee?.id);
+
   // Reset/populate the form whenever the drawer opens for a new target.
   useEffect(() => {
     if (!open) return;
@@ -102,6 +122,7 @@ export default function EmployeeFormDrawer({ open, employee, onClose }: Props) {
         joinDate: dayjs(employee.joinDate),
         position: employee.position,
         employmentType: employee.employmentType,
+        fullTimeSince: employee.fullTimeSince ? dayjs(employee.fullTimeSince) : undefined,
         contractStartDate: employee.contractStartDate ? dayjs(employee.contractStartDate) : undefined,
         contractEndDate: employee.contractEndDate ? dayjs(employee.contractEndDate) : undefined,
         monthlySalary: employee.monthlySalary ? Number(employee.monthlySalary) : undefined,
@@ -125,7 +146,19 @@ export default function EmployeeFormDrawer({ open, employee, onClose }: Props) {
     }
   }, [open, employee, form]);
 
+  // Changing employmentType is consequential in both directions — it starts or stops paid
+  // leave accrual and gates the whole leave feature — so it goes through a confirmation step
+  // rather than saving straight from the form.
   async function onFinish(values: EmployeeFormValues): Promise<void> {
+    if (employee && values.employmentType !== employee.employmentType) {
+      setAcknowledged(false);
+      setPendingValues(values);
+      return;
+    }
+    await save(values);
+  }
+
+  async function save(values: EmployeeFormValues): Promise<void> {
     const payload = toPayload(values);
     try {
       if (employee) {
@@ -135,6 +168,7 @@ export default function EmployeeFormDrawer({ open, employee, onClose }: Props) {
         await createEmployee.mutateAsync(payload);
         message.success('Employee created');
       }
+      setPendingValues(null);
       onClose();
     } catch (err) {
       const axiosError = err as AxiosError<{ error?: string }>;
@@ -153,8 +187,11 @@ export default function EmployeeFormDrawer({ open, employee, onClose }: Props) {
   }
 
   const saving = createEmployee.isPending || updateEmployee.isPending;
+  const toPartTime = pendingValues?.employmentType === 'PART_TIME';
+  const strandedDays = balance?.balance ?? 0;
 
   return (
+    <>
     <Drawer
       title={isEdit ? 'Edit Employee' : 'New Employee'}
       width={640}
@@ -236,6 +273,17 @@ export default function EmployeeFormDrawer({ open, employee, onClose }: Props) {
               <Switch />
             </Form.Item>
           </Col>
+          {employmentType === 'FULL_TIME' && (
+            <Col span={12}>
+              <Form.Item
+                name="fullTimeSince"
+                label="Full-time Since"
+                tooltip="Paid leave accrues from this date, not the join date. Leave blank and it is set automatically when the employee becomes full-time — set it only to correct a conversion recorded late."
+              >
+                <DatePicker style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          )}
         </Row>
 
         <Divider orientation="left">Contract</Divider>
@@ -337,5 +385,58 @@ export default function EmployeeFormDrawer({ open, employee, onClose }: Props) {
         </Row>
       </Form>
     </Drawer>
+
+    {/* Sits above the drawer so Back leaves the entered values intact. */}
+    <Modal
+      title="Change employment type?"
+      open={pendingValues !== null}
+      onCancel={() => {
+        if (!saving) setPendingValues(null);
+      }}
+      onOk={() => {
+        if (pendingValues) void save(pendingValues);
+      }}
+      confirmLoading={saving}
+      okText={toPartTime ? 'Convert to Part-time' : 'Convert to Full-time'}
+      okButtonProps={{ disabled: toPartTime && !acknowledged }}
+      cancelText="Back"
+      cancelButtonProps={{ disabled: saving }}
+      closable={!saving}
+      maskClosable={false}
+      keyboard={!saving}
+    >
+      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+        <Typography.Text strong>
+          {employee?.nickname ?? employee?.fullName} · {toPartTime ? 'Full-time' : 'Part-time'} →{' '}
+          {toPartTime ? 'Part-time' : 'Full-time'}
+        </Typography.Text>
+
+        {toPartTime ? (
+          <>
+            <Typography.Text>
+              This employee has <strong>{strandedDays} day(s)</strong> of accrued paid leave.
+              Converting them to part-time stops accrual, and those days become unusable — a
+              leave balance cannot be paid out or transferred.
+            </Typography.Text>
+            <Typography.Text>
+              They will no longer be able to submit any leave. Existing leave history is kept
+              and stays visible to HR.
+            </Typography.Text>
+            <Checkbox
+              checked={acknowledged}
+              onChange={(event) => setAcknowledged(event.target.checked)}
+            >
+              I understand the accrued balance will be lost.
+            </Checkbox>
+          </>
+        ) : (
+          <Typography.Text>
+            Paid leave accrual starts from today, not from their join date. They will be able
+            to submit leave.
+          </Typography.Text>
+        )}
+      </Space>
+    </Modal>
+    </>
   );
 }

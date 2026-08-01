@@ -54,6 +54,12 @@ Self-access is enforced in the controller, not the router. `PUT` is a genuine fu
 any optional field you omit is set to `null`. Full-time requires `monthlySalary`, part-time
 requires `hourlyRate`, and KTP must be exactly 16 digits.
 
+`fullTimeSince` is the exception to the full-replace rule: **omit it and the server derives
+it** from the `employmentType` transition rather than nulling it — becoming full-time anchors
+accrual at today, leaving full-time clears it, and an update that does not change employment
+type preserves the stored value. Supply it explicitly to correct a conversion recorded late.
+A part-time employee never carries an anchor, whatever the body says.
+
 There is no delete. Employees are deactivated via `isActive`.
 
 ## `holidays`
@@ -75,13 +81,21 @@ working-day counting. `Holiday.date` is unique, so a duplicate returns 409.
 | GET | `/leave/balance` | any (HR must pass `?employeeId=`) | Accrual breakdown for one employee |
 | GET | `/leave/balances` | HR | One balance row per active full-timer |
 | GET | `/leave/calendar` | any | `?month=YYYY-MM` → leave + holidays |
-| GET | `/leave` | any, self-scoped | Paginated records, `?type=` |
-| POST | `/leave` | any with an employee link | Record leave — takes effect immediately |
+| GET | `/leave` | any, self-scoped | Paginated records, `?type=PAID\|SICK\|UNPAID` |
+| POST | `/leave` | full-time employees only | Record leave — takes effect immediately |
 | DELETE | `/leave/:id` | owner **or** HR | Cancel, refunding paid days |
 
 There is no review route: leave has no approval step, and no `status` column to filter on.
 `POST` consumes paid-leave balance in the same transaction that writes the row, so it
 returns 400 if the balance cannot cover it.
+
+`POST` returns 400 for a **part-time** employee whatever the type — leave is a full-time-only
+feature. `DELETE` is deliberately not gated that way, so HR can still unwind a historical
+record belonging to someone who has since converted.
+
+`SICK` and `UNPAID` neither check nor consume the balance, and neither refunds on cancel.
+Both produce a payroll deduction; `GET /leave/balance` reports them as the independent
+lifetime totals `sickTaken` and `unpaidTaken`.
 
 `DELETE` deletes the row and refunds a PAID record's days, unwinding non-expired accrual
 rows first in FIFO order and expired ones only after. An employee may

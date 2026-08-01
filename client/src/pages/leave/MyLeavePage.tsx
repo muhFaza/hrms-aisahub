@@ -25,11 +25,10 @@ import {
   type LeaveRequest,
 } from '../../api/leave';
 import { formatDate } from '../../lib/format';
-import { useAuth } from '../../lib/AuthContext';
 import LeaveCalendar from '../../components/LeaveCalendar';
 import RequestLeaveModal from './RequestLeaveModal';
 
-function BalanceTab({ isFullTime }: { isFullTime: boolean }) {
+function BalanceTab() {
   const [modalOpen, setModalOpen] = useState(false);
   const { data: balance } = useLeaveBalance();
   const { data: requests, isLoading } = useLeaveRequests({ pageSize: 100 });
@@ -95,23 +94,29 @@ function BalanceTab({ isFullTime }: { isFullTime: boolean }) {
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
+      {/* flex rather than a fixed span: five stats do not divide into antd's 24 columns. */}
       <Row gutter={16}>
-        <Col span={6}>
+        <Col flex="1">
           <Card>
             <Statistic title="Balance" value={balance?.balance ?? 0} suffix="days" />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col flex="1">
           <Card>
             <Statistic title="Used" value={balance?.usedTotal ?? 0} suffix="days" />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col flex="1">
           <Card>
             <Statistic title="Sick Taken" value={balance?.sickTaken ?? 0} suffix="days" />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col flex="1">
+          <Card>
+            <Statistic title="Unpaid Taken" value={balance?.unpaidTaken ?? 0} suffix="days" />
+          </Card>
+        </Col>
+        <Col flex="1">
           <Card>
             <Statistic title="Expired" value={balance?.expiredTotal ?? 0} suffix="days" />
           </Card>
@@ -150,23 +155,16 @@ function BalanceTab({ isFullTime }: { isFullTime: boolean }) {
         />
       </Card>
 
-      <RequestLeaveModal
-        open={modalOpen}
-        isFullTime={isFullTime}
-        onClose={() => setModalOpen(false)}
-      />
+      <RequestLeaveModal open={modalOpen} onClose={() => setModalOpen(false)} />
     </Space>
   );
 }
 
 export default function MyLeavePage() {
-  const { user } = useAuth();
-  const isFullTime = user?.employee?.employmentType === 'FULL_TIME';
-
   return (
     <Tabs
       items={[
-        { key: 'balance', label: 'My Leave', children: <BalanceTab isFullTime={isFullTime} /> },
+        { key: 'balance', label: 'My Leave', children: <BalanceTab /> },
         { key: 'calendar', label: 'Calendar', children: <LeaveCalendar /> },
       ]}
     />

@@ -100,6 +100,7 @@ function BalancesTab() {
     { title: 'Used', dataIndex: 'used', width: 100 },
     { title: 'Expired', dataIndex: 'expired', width: 100 },
     { title: 'Sick Taken', dataIndex: 'sickTaken', width: 120 },
+    { title: 'Unpaid Taken', dataIndex: 'unpaidTaken', width: 130 },
   ];
 
   return (

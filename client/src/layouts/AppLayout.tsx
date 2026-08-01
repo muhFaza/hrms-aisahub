@@ -46,14 +46,18 @@ function buildNavItems(
 
   const items: NavItem[] = [
     { key: '/dashboard', label: 'Dashboard', icon: <DashboardOutlined /> },
-    { key: '/my-leave', label: 'My Leave', icon: <CalendarOutlined /> },
     { key: '/holidays', label: 'Holidays', icon: <ScheduleOutlined /> },
   ];
   if (employmentType === 'PART_TIME') {
     items.push({ key: '/my-daily-log', label: 'Daily Log', icon: <FileTextOutlined /> });
   }
+  // Leave is a full-time benefit: part-timers are paid per logged hour, so an unlogged day
+  // is already unpaid and there is nothing to record.
   if (employmentType === 'FULL_TIME') {
-    items.push({ key: '/my-overtime', label: 'Overtime', icon: <ClockCircleOutlined /> });
+    items.push(
+      { key: '/my-leave', label: 'My Leave', icon: <CalendarOutlined /> },
+      { key: '/my-overtime', label: 'Overtime', icon: <ClockCircleOutlined /> },
+    );
   }
   items.push(
     { key: '/my-reimbursements', label: 'Reimbursements', icon: <DollarOutlined /> },

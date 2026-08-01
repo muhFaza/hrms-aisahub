@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from './client';
 import type { Holiday } from './holidays';
 
-export type LeaveType = 'PAID' | 'SICK';
+export type LeaveType = 'PAID' | 'SICK' | 'UNPAID';
 
 // Decimal totalDays is serialized as a number by the leave service.
 export interface LeaveRequest {
@@ -48,6 +48,7 @@ export interface LeaveBalance {
   usedTotal: number;
   expiredTotal: number;
   sickTaken: number;
+  unpaidTaken: number;
   expiringSoon: { days: number; expiresAt: string }[];
   rows: AccrualRow[];
 }
@@ -61,6 +62,7 @@ export interface LeaveBalanceSummary {
   used: number;
   expired: number;
   sickTaken: number;
+  unpaidTaken: number;
 }
 
 export interface CalendarLeave {
@@ -163,9 +165,11 @@ export function useCancelLeave() {
 export const leaveTypeColor: Record<LeaveType, string> = {
   PAID: 'green',
   SICK: 'orange',
+  UNPAID: 'volcano',
 };
 
 export const leaveTypeLabel: Record<LeaveType, string> = {
   PAID: 'Paid Leave',
   SICK: 'Sick Leave',
+  UNPAID: 'Unpaid Leave',
 };

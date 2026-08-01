@@ -17,6 +17,7 @@ enum EmploymentType {
 enum LeaveType {
   PAID
   SICK
+  UNPAID
 }
 
 // Overtime and Reimbursement only — leave has no approval step.
@@ -81,6 +82,9 @@ model Employee {
   joinDate          DateTime
   position          String
   employmentType    EmploymentType
+  // Accrual anchor: paid leave is earned from the date the employee became full-time, not
+  // from joinDate. NULL for part-timers, who neither take leave nor earn it.
+  fullTimeSince     DateTime?
   contractStartDate DateTime?
   contractEndDate   DateTime?
   contractFilePath  String?

@@ -166,6 +166,12 @@ function EmployeeDashboard({ isFullTime }: { isFullTime: boolean }) {
                 <Statistic title="Sick Taken" value={balance?.sickTaken ?? 0} suffix="days" />
               </Card>
             </Col>
+            {/* Ordered so the four leave stats fill one row and overtime wraps below. */}
+            <Col xs={12} md={6}>
+              <Card loading={isLoading}>
+                <Statistic title="Unpaid Taken" value={balance?.unpaidTaken ?? 0} suffix="days" />
+              </Card>
+            </Col>
             <Col xs={12} md={6}>
               <Card loading={isLoading}>
                 <Statistic

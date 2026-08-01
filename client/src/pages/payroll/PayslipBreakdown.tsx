@@ -18,6 +18,18 @@ export default function PayslipBreakdown(props: Props): React.ReactElement {
   const { detail } = props;
   const isFullTime = props.employmentType === 'FULL_TIME';
 
+  // Payslips finalized before unpaid leave existed have no unpaidDays in their stored detail.
+  const sickDays = detail.sickDays ?? 0;
+  const unpaidDays = detail.unpaidDays ?? 0;
+  const unpaidLeaveIds = detail.unpaidLeaveIds ?? [];
+
+  // Per-type money is derived, never stored: leaveDeduction is rounded once over the combined
+  // days so the two lines can't disagree with it. Deriving sick and handing unpaid the
+  // remainder keeps them summing to the stored total exactly, whatever the rounding did.
+  const sickDeduction =
+    unpaidDays === 0 ? props.leaveDeduction : Math.round(sickDays * (detail.dailyRate ?? 0));
+  const unpaidDeduction = props.leaveDeduction - sickDeduction;
+
   return (
     <Descriptions size="small" column={2} bordered>
       <Descriptions.Item label="Employment type">
@@ -39,9 +51,20 @@ export default function PayslipBreakdown(props: Props): React.ReactElement {
             {detail.overtimeHours} h ({detail.overtimeIds.length} entr
             {detail.overtimeIds.length === 1 ? 'y' : 'ies'}) = {formatIDR(props.overtimePay)}
           </Descriptions.Item>
-          <Descriptions.Item label="Sick leave deduction">
-            {detail.sickDays} day(s) ({detail.sickLeaveIds.length} request
-            {detail.sickLeaveIds.length === 1 ? '' : 's'}) = -{formatIDR(props.leaveDeduction)}
+          {sickDays > 0 && (
+            <Descriptions.Item label="Sick leave">
+              {sickDays} day(s) ({detail.sickLeaveIds.length} request
+              {detail.sickLeaveIds.length === 1 ? '' : 's'}) = -{formatIDR(sickDeduction)}
+            </Descriptions.Item>
+          )}
+          {unpaidDays > 0 && (
+            <Descriptions.Item label="Unpaid leave">
+              {unpaidDays} day(s) ({unpaidLeaveIds.length} request
+              {unpaidLeaveIds.length === 1 ? '' : 's'}) = -{formatIDR(unpaidDeduction)}
+            </Descriptions.Item>
+          )}
+          <Descriptions.Item label="Leave deduction">
+            -{formatIDR(props.leaveDeduction)}
           </Descriptions.Item>
         </>
       ) : (

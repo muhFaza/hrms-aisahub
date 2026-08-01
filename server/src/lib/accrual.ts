@@ -75,17 +75,24 @@ export function planFifoAllocation(rows: AccrualLike[], totalDays: number): Allo
   return plan;
 }
 
-// Idempotent catch-up: creates any missing monthly accrual rows for active full-timers
-// from their join month through the current month. One paid-leave day per completed month
-// of service, each expiring 18 months after its accrual period (design §4). Returns rows created.
+// Idempotent catch-up: creates any missing monthly accrual rows for active full-timers from
+// their fullTimeSince month through the current month. One paid-leave day per completed
+// month of service, each expiring 18 months after its accrual period (design §4). Returns
+// rows created.
+//
+// The cursor starts at fullTimeSince, not joinDate: a part-timer later promoted to full-time
+// earns paid leave from the promotion, never retroactively for the months they were
+// part-time. fullTimeSince is NULL for part-timers, so the guard below also stops accrual for
+// anyone converted out of full-time.
 export async function ensureAccrualsUpToDate(employeeId?: number): Promise<number> {
   const employees = await prisma.employee.findMany({
     where: {
       employmentType: 'FULL_TIME',
       isActive: true,
+      fullTimeSince: { not: null },
       ...(employeeId ? { id: employeeId } : {}),
     },
-    select: { id: true, joinDate: true },
+    select: { id: true, fullTimeSince: true },
   });
 
   const currentMonth = dayjs().startOf('month');
@@ -99,7 +106,9 @@ export async function ensureAccrualsUpToDate(employeeId?: number): Promise<numbe
     const existingKeys = new Set(existing.map((row) => row.period.toISOString().slice(0, 10)));
 
     const toCreate: Prisma.LeaveAccrualCreateManyInput[] = [];
-    let cursor = dayjs(employee.joinDate).startOf('month');
+    // Month granularity, matching the existing rule that someone joining on the 30th earns
+    // that month's full day: converting mid-month earns the conversion month's day.
+    let cursor = dayjs(employee.fullTimeSince as Date).startOf('month');
     while (cursor.isSame(currentMonth) || cursor.isBefore(currentMonth)) {
       const key = cursor.format('YYYY-MM-DD');
       if (!existingKeys.has(key)) {
@@ -139,6 +148,7 @@ export interface BalanceBreakdown {
   usedTotal: number;
   expiredTotal: number;
   sickTaken: number;
+  unpaidTaken: number;
   expiringSoon: { days: number; expiresAt: Date }[];
   rows: AccrualRowBreakdown[];
 }
@@ -171,17 +181,23 @@ export async function getBalanceBreakdown(employeeId: number): Promise<BalanceBr
 
   const { balance, accruedTotal, usedTotal, expiredTotal } = computeBalance(rows, now);
 
-  const sick = await prisma.leaveRequest.aggregate({
-    where: { employeeId, type: 'SICK' },
+  // Lifetime totals per deducting type, not per-year. One groupBy rather than an aggregate
+  // per type; a type with no records is simply absent from the result.
+  const taken = await prisma.leaveRequest.groupBy({
+    by: ['type'],
+    where: { employeeId, type: { in: ['SICK', 'UNPAID'] } },
     _sum: { totalDays: true },
   });
+  const takenByType = (type: 'SICK' | 'UNPAID') =>
+    Number(taken.find((row) => row.type === type)?._sum.totalDays ?? 0);
 
   return {
     balance,
     accruedTotal,
     usedTotal,
     expiredTotal,
-    sickTaken: Number(sick._sum.totalDays ?? 0),
+    sickTaken: takenByType('SICK'),
+    unpaidTaken: takenByType('UNPAID'),
     expiringSoon,
     rows,
   };

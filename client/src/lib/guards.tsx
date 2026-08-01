@@ -21,6 +21,20 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+// Restricts a route to full-time employees. Leave is a full-time benefit, so removing the
+// nav entry is not enough on its own — the URL stays reachable by hand. HR is allowed
+// through: HR accounts need not have an employee profile, and they review leave here too.
+export function RequireFullTime({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+  if (user.roleName !== 'HR' && user.employee?.employmentType !== 'FULL_TIME') {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <>{children}</>;
+}
+
 // Restricts a route to a single role; other roles get a 403 result page (UAT scenario).
 export function RequireRole({ role, children }: { role: RoleName; children: ReactNode }) {
   const { user } = useAuth();
