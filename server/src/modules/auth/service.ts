@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/prisma';
 import { env } from '../../config/env';
 import { HttpError } from '../../lib/httpError';
-import type { LoginInput } from './schemas';
+import type { ChangePasswordInput, LoginInput } from './schemas';
 
 // Relations loaded to build the client-facing user shape (login + /me).
 const userInclude = Prisma.validator<Prisma.UserInclude>()({
@@ -57,6 +57,38 @@ export async function login(input: LoginInput) {
   );
 
   return { token, user: serializeUser(user) };
+}
+
+// Self-service password change. Lives here rather than in the users module because every
+// /users route is HR-only router-wide, and this is the one password path an employee owns.
+//
+// Note it does NOT invalidate other sessions: there is no revocation list, so tokens already
+// issued stay valid until they expire. Deactivating the account is still the only immediate
+// revocation. The UI says so at the point of change.
+export async function changePassword(userId: number, input: ChangePasswordInput): Promise<void> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { passwordHash: true },
+  });
+  if (!user) {
+    throw new HttpError(401, 'User no longer exists');
+  }
+
+  // 400, deliberately not 401: the client's axios interceptor treats any 401 outside
+  // /auth/login as an expired session and bounces to the login page, so a mistyped current
+  // password would log the user out instead of showing them the error.
+  const currentOk = await bcrypt.compare(input.currentPassword, user.passwordHash);
+  if (!currentOk) {
+    throw new HttpError(400, 'Current password is incorrect');
+  }
+
+  const unchanged = await bcrypt.compare(input.newPassword, user.passwordHash);
+  if (unchanged) {
+    throw new HttpError(400, 'New password must be different from the current password');
+  }
+
+  const passwordHash = await bcrypt.hash(input.newPassword, 10);
+  await prisma.user.update({ where: { id: userId }, data: { passwordHash } });
 }
 
 export async function getMe(userId: number) {

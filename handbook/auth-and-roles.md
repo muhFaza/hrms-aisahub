@@ -85,6 +85,29 @@ anywhere** — HR is the only path to an account.
 
 ---
 
+## Changing a password
+
+Two paths, deliberately separate:
+
+| Path | Who | Needs current password? |
+| --- | --- | --- |
+| `POST /auth/password` | any account, on itself | yes |
+| `PATCH /users/:id` | HR, on anyone | no — it is a reset, for a forgotten password |
+
+The self-service route takes no id; it acts on `req.user.userId`, so it cannot be aimed at
+another account. It sits in the `auth` module because every `/users` route is HR-only.
+
+A wrong current password answers **400, not 401.** The client's axios interceptor treats a
+401 outside `/auth/login` as an expired session and redirects, so a 401 would sign the user
+out over a typo. Do not "correct" this to 401.
+
+**Neither path invalidates existing sessions.** With no revocation list, a token issued
+before the change stays valid until it expires. Both UIs state this where the password is
+entered — it is the kind of assumption a user would otherwise make wrongly. Deactivating
+the account is still the only immediate revocation.
+
+---
+
 ## Accounts and the role rule
 
 Every route under `/users` is HR-only, applied router-wide rather than per-route — so a new

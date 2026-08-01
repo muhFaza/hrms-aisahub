@@ -1,6 +1,6 @@
 # API reference
 
-Base path for everything: **`/api/v1`**. 49 endpoints across eleven modules.
+Base path for everything: **`/api/v1`**. 50 endpoints across eleven modules.
 
 Authentication is a bearer token: `Authorization: Bearer <jwt>`. Every route except
 `POST /auth/login` and `GET /health` requires one.
@@ -21,10 +21,25 @@ Authentication is a bearer token: `Authorization: Bearer <jwt>`. Every route exc
 | --- | --- | --- | --- |
 | POST | `/auth/login` | public | Email + password → JWT and user shape |
 | GET | `/auth/me` | any | Current user plus linked employee |
+| POST | `/auth/password` | any | Change your own password |
 
 Login returns a deliberately generic *"Invalid email or password"* for both an unknown
 email and a wrong password, so account existence does not leak. A deactivated account gets
 a distinct message, but only **after** the password check passes.
+
+`POST /auth/password` takes `{currentPassword, newPassword}` and acts on `req.user.userId`
+— there is no id in the path, so it cannot be pointed at another account. It lives in
+`auth` rather than `users` because every `/users` route is HR-only, and this is the one
+password path an employee owns. HR's reset (`PATCH /users/:id`) is separate and needs no
+current password.
+
+A wrong current password returns **400, not 401** — deliberately. The client's axios
+interceptor treats any 401 outside `/auth/login` as an expired session and redirects to the
+login page, so a 401 here would sign the user out over a typo.
+
+Neither path invalidates existing sessions: there is no revocation list, so tokens already
+issued stay valid until they expire. Both UIs say so at the point of change. Deactivating
+the account remains the only immediate revocation.
 
 ## `users` — the entire router is HR-only
 
