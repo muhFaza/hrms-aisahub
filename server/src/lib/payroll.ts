@@ -85,6 +85,32 @@ export interface PayslipRow {
   detail: PayslipDetail;
 }
 
+// Splits a stored leaveDeduction back into its sick and unpaid halves for display.
+//
+// Per-type money is never stored: leaveDeduction is rounded once over the combined days so the
+// two breakdown lines cannot disagree with the total they sum to. Deriving sick from dailyRate
+// and handing unpaid the remainder keeps them summing to the stored total exactly, whatever
+// the rounding did.
+//
+// Payslips finalized before unpaid leave existed have neither field in their stored detail,
+// hence the `?? 0` reads. client/src/pages/payroll/PayslipBreakdown.tsx mirrors this; the
+// wire boundary rules out sharing the code, so this copy is the tested definition.
+export function splitLeaveDeduction(
+  detail: Pick<PayslipDetail, 'sickDays' | 'unpaidDays' | 'dailyRate'>,
+  leaveDeduction: number,
+): { sickDays: number; unpaidDays: number; sickDeduction: number; unpaidDeduction: number } {
+  const sickDays = detail.sickDays ?? 0;
+  const unpaidDays = detail.unpaidDays ?? 0;
+  const sickDeduction =
+    unpaidDays === 0 ? leaveDeduction : Math.round(sickDays * (detail.dailyRate ?? 0));
+  return {
+    sickDays,
+    unpaidDays,
+    sickDeduction,
+    unpaidDeduction: leaveDeduction - sickDeduction,
+  };
+}
+
 // @db.Date values arrive as UTC midnight; read in UTC so period boundaries are stable.
 function inPeriod(date: Date, year: number, month: number): boolean {
   return date.getUTCFullYear() === year && date.getUTCMonth() + 1 === month;

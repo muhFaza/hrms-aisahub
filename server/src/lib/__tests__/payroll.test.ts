@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { computePayslipRow, type ComputeContext, type PayrollEmployee } from '../payroll';
+import {
+  computePayslipRow,
+  splitLeaveDeduction,
+  type ComputeContext,
+  type PayrollEmployee,
+} from '../payroll';
 
 function d(iso: string): Date {
   return new Date(`${iso}T00:00:00.000Z`);
@@ -242,5 +247,54 @@ describe('computePayslipRow — part-time', () => {
     expect(row.detail.unpaidLeaveIds).toEqual([]);
     expect(row.leaveDeduction).toBe(0);
     expect(row.totalIdr).toBe(400_000);
+  });
+});
+
+// The payslip PDF and the client breakdown both split a stored leaveDeduction back into its
+// two lines. The invariant is that they sum to the stored total exactly, whatever rounding did
+// when the payslip was frozen.
+describe('splitLeaveDeduction', () => {
+  it('gives the whole deduction to sick when there is no unpaid leave', () => {
+    const split = splitLeaveDeduction({ sickDays: 2, unpaidDays: 0, dailyRate: 476_190 }, 952_381);
+    expect(split.sickDeduction).toBe(952_381);
+    expect(split.unpaidDeduction).toBe(0);
+  });
+
+  it('gives the whole deduction to unpaid when there is no sick leave', () => {
+    const split = splitLeaveDeduction({ sickDays: 0, unpaidDays: 2, dailyRate: 476_190 }, 952_381);
+    expect(split.sickDeduction).toBe(0);
+    expect(split.unpaidDeduction).toBe(952_381);
+  });
+
+  it('sums to the stored total when both types are present and rounding disagrees', () => {
+    const split = splitLeaveDeduction({ sickDays: 1, unpaidDays: 1, dailyRate: 476_190 }, 952_381);
+    expect(split.sickDeduction).toBe(476_190);
+    expect(split.unpaidDeduction).toBe(476_191); // absorbs the rounding remainder
+    expect(split.sickDeduction + split.unpaidDeduction).toBe(952_381);
+  });
+
+  it('sums to the stored total for a fractional day split', () => {
+    const split = splitLeaveDeduction({ sickDays: 0.5, unpaidDays: 1.5, dailyRate: 333_333 }, 666_666);
+    expect(split.sickDeduction + split.unpaidDeduction).toBe(666_666);
+  });
+
+  // A payslip finalized before unpaid leave existed has neither field in its stored JSON.
+  it('treats a legacy snapshot as sick-only rather than yielding NaN', () => {
+    const split = splitLeaveDeduction({ sickDays: 1, dailyRate: 476_190 } as never, 476_190);
+    expect(split.unpaidDays).toBe(0);
+    expect(split.sickDeduction).toBe(476_190);
+    expect(split.unpaidDeduction).toBe(0);
+  });
+
+  it('is zero across the board when nothing was deducted', () => {
+    const split = splitLeaveDeduction({ sickDays: 0, unpaidDays: 0, dailyRate: 476_190 }, 0);
+    expect(split).toEqual({ sickDays: 0, unpaidDays: 0, sickDeduction: 0, unpaidDeduction: 0 });
+  });
+
+  // Part-timers have no dailyRate in their detail at all.
+  it('does not produce NaN when dailyRate is absent', () => {
+    const split = splitLeaveDeduction({ sickDays: 0, unpaidDays: 0 }, 0);
+    expect(Number.isNaN(split.sickDeduction)).toBe(false);
+    expect(Number.isNaN(split.unpaidDeduction)).toBe(false);
   });
 });

@@ -3,6 +3,10 @@ import { prisma } from '../../config/prisma';
 import { HttpError } from '../../lib/httpError';
 import type { AuthUser } from '../../middleware/auth';
 import { fetchUsdToIdrRate } from '../../lib/fx';
+import { renderPayrollSheet } from '../../lib/pdf/payrollSheet';
+import { renderPayslip } from '../../lib/pdf/payslip';
+import { periodKey } from '../../lib/pdf/theme';
+import { renderPayoutCsv } from '../../lib/csv/payoutCsv';
 import { emitToEmployees, type EmployeeTarget } from '../notifications/emit';
 import {
   computePayslipRow,
@@ -205,8 +209,13 @@ function totalsOf(rows: PayslipRow[]) {
   };
 }
 
+// A draft period has no payslip rows yet, so `payslipId` is present only once finalized. The
+// UI keys its per-employee payslip download off it.
+type PreviewRow = PayslipRow & { payslipId?: number };
+
 // Reconstructs a preview row from a stored payslip so finalized periods return the same shape.
 function rowFromPayslip(payslip: {
+  id: number;
   employeeId: number;
   basicSalary: Prisma.Decimal;
   overtimePay: Prisma.Decimal;
@@ -216,8 +225,9 @@ function rowFromPayslip(payslip: {
   totalUsd: Prisma.Decimal;
   detail: Prisma.JsonValue;
   employee: { fullName: string; nickname: string | null; employmentType: string };
-}): PayslipRow {
+}): PreviewRow {
   return {
+    payslipId: payslip.id,
     employeeId: payslip.employeeId,
     name: payslip.employee.nickname ?? payslip.employee.fullName,
     employmentType: payslip.employee.employmentType as PayslipRow['employmentType'],
@@ -240,7 +250,7 @@ export async function getPeriodPreview(id: number) {
     throw new HttpError(404, 'Payroll period not found');
   }
 
-  let rows: PayslipRow[];
+  let rows: PreviewRow[];
   if (period.status === 'FINALIZED') {
     const payslips = await prisma.payslip.findMany({
       where: { payrollPeriodId: id },
@@ -322,6 +332,153 @@ export async function finalizePeriod(id: number, finalizerUserId: number) {
     period: serializePeriod(finalized!),
     rows: finalizedRows,
     totals: totalsOf(finalizedRows),
+  };
+}
+
+// --- Exports -----------------------------------------------------------------------------
+// Rendering lives in lib/ (database-free, unit-tested); these functions gather the rows,
+// enforce the rules, and hand the controller a ready-to-send document.
+
+export interface ExportDocument {
+  filename: string;
+  contentType: string;
+  body: Buffer | string;
+  included?: number;
+  excluded?: number;
+}
+
+// Only a finalized period can be exported. A draft's numbers are recomputed on every read and
+// would put a figure on a payment file that the next request could contradict.
+async function loadFinalizedPeriod(id: number) {
+  const period = await prisma.payrollPeriod.findUnique({
+    where: { id },
+    include: { finalizedBy: { select: { email: true } } },
+  });
+  if (!period) {
+    throw new HttpError(404, 'Payroll period not found');
+  }
+  if (period.status !== 'FINALIZED') {
+    throw new HttpError(409, 'Only finalized periods can be exported');
+  }
+  return period;
+}
+
+export async function exportPeriodPdf(id: number): Promise<ExportDocument> {
+  const period = await loadFinalizedPeriod(id);
+  const payslips = await prisma.payslip.findMany({
+    where: { payrollPeriodId: id },
+    include: { employee: { select: { fullName: true, nickname: true, employmentType: true } } },
+    orderBy: { employee: { fullName: 'asc' } },
+  });
+  const rows = payslips.map(rowFromPayslip);
+  const totals = totalsOf(rows);
+
+  const body = await renderPayrollSheet({
+    year: period.year,
+    month: period.month,
+    status: period.status,
+    exchangeRate: Number(period.exchangeRate),
+    rateSource: period.rateSource,
+    finalizedAt: period.finalizedAt,
+    finalizedByEmail: period.finalizedBy?.email ?? null,
+    rows: rows.map((row) => ({
+      employeeId: row.employeeId,
+      name: row.name,
+      employmentType: row.employmentType,
+      basicSalary: row.basicSalary,
+      overtimePay: row.overtimePay,
+      reimbursementTotal: row.reimbursementTotal,
+      leaveDeduction: row.leaveDeduction,
+      totalIdr: row.totalIdr,
+      totalUsd: row.totalUsd,
+    })),
+    totalIdr: totals.totalIdr,
+    totalUsd: totals.totalUsd,
+    generatedAt: new Date(),
+  });
+
+  return {
+    filename: `payroll-${periodKey(period.year, period.month)}.pdf`,
+    contentType: 'application/pdf',
+    body,
+  };
+}
+
+export async function exportPeriodCsv(id: number): Promise<ExportDocument> {
+  const period = await loadFinalizedPeriod(id);
+  const payslips = await prisma.payslip.findMany({
+    where: { payrollPeriodId: id },
+    include: {
+      employee: {
+        select: { fullName: true, email: true, bankName: true, bankAccountNumber: true },
+      },
+    },
+    orderBy: { employee: { fullName: 'asc' } },
+  });
+
+  // Legal name, not the nickname the PDF shows: this is what the receiving bank matches on.
+  const result = renderPayoutCsv(
+    payslips.map((payslip) => ({
+      employeeId: payslip.employeeId,
+      fullName: payslip.employee.fullName,
+      email: payslip.employee.email,
+      bankName: payslip.employee.bankName,
+      bankAccountNumber: payslip.employee.bankAccountNumber,
+      totalIdr: Number(payslip.totalIdr),
+      totalUsd: Number(payslip.totalUsd),
+    })),
+    period.year,
+    period.month,
+  );
+
+  return {
+    filename: `payout-${periodKey(period.year, period.month)}.csv`,
+    contentType: 'text/csv; charset=utf-8',
+    body: result.csv,
+    included: result.included,
+    excluded: result.excluded,
+  };
+}
+
+export async function exportPayslipPdf(payslipId: number, actor: AuthUser): Promise<ExportDocument> {
+  const payslip = await prisma.payslip.findUnique({
+    where: { id: payslipId },
+    include: {
+      payrollPeriod: { select: { year: true, month: true, status: true } },
+      employee: { select: { fullName: true, position: true, employmentType: true } },
+    },
+  });
+
+  // 404 rather than 403 when someone requests a payslip that is not theirs: a 403 would confirm
+  // the payslip exists, turning this endpoint into a headcount oracle.
+  const isOwner = actor.employeeId !== null && payslip?.employeeId === actor.employeeId;
+  if (!payslip || (actor.roleName !== 'HR' && !isOwner)) {
+    throw new HttpError(404, 'Payslip not found');
+  }
+  if (payslip.payrollPeriod.status !== 'FINALIZED') {
+    throw new HttpError(409, 'Only finalized periods can be exported');
+  }
+
+  const body = await renderPayslip({
+    year: payslip.payrollPeriod.year,
+    month: payslip.payrollPeriod.month,
+    employeeName: payslip.employee.fullName,
+    position: payslip.employee.position,
+    employmentType: payslip.employee.employmentType,
+    basicSalary: Number(payslip.basicSalary),
+    overtimePay: Number(payslip.overtimePay),
+    reimbursementTotal: Number(payslip.reimbursementTotal),
+    leaveDeduction: Number(payslip.leaveDeduction),
+    totalIdr: Number(payslip.totalIdr),
+    totalUsd: Number(payslip.totalUsd),
+    detail: payslip.detail as unknown as PayslipDetail,
+    generatedAt: new Date(),
+  });
+
+  return {
+    filename: `payslip-${periodKey(payslip.payrollPeriod.year, payslip.payrollPeriod.month)}-${payslip.employeeId}.pdf`,
+    contentType: 'application/pdf',
+    body,
   };
 }
 

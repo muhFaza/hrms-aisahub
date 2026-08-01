@@ -154,9 +154,30 @@ multer populates the multipart text fields first. That is why the schema uses `z
 | PATCH | `/payroll/periods/:id` | HR | Override the exchange rate |
 | POST | `/payroll/periods/:id/finalize` | HR | Snapshot payslips, notify every employee, lock the month |
 | DELETE | `/payroll/periods/:id` | HR | Delete a DRAFT period |
+| GET | `/payroll/periods/:id/export/pdf` | HR | Payroll sheet PDF for the period |
+| GET | `/payroll/periods/:id/export/csv` | HR | Payment-gateway payout file |
+| GET | `/payroll/payslips/:id/export/pdf` | any | Payslip PDF — own, or any if HR |
 
 `/my-payslips` is registered before `/periods/:id` so it is not swallowed by the parameter
 route. Rate override and delete both return 409 unless the period is DRAFT.
+
+### Exports
+
+All three return a `Content-Disposition: attachment` body rather than JSON, and **409 unless
+the period is FINALIZED** — a draft is recomputed on every read, so putting its figures on a
+payment file would be publishing a number the next request could contradict.
+
+The payslip route is the one export any employee may call. It answers **404, not 403,** for a
+payslip belonging to someone else: a 403 would confirm the payslip exists, which turns the
+endpoint into a headcount oracle. The identical 404 is returned for an id that does not exist.
+
+The CSV omits any employee whose net is zero or negative — no gateway can action that payout.
+It carries `X-Export-Included` and `X-Export-Excluded` headers so the caller can report the
+omission instead of leaving the row count silently disagreeing with the PDF sheet.
+
+Because auth is a bearer header and not a cookie, these cannot be fetched with a plain
+`<a href download>`. The client routes every download through the axios instance with
+`responseType: 'blob'` (`client/src/lib/download.ts`).
 
 ## `dashboard`
 
