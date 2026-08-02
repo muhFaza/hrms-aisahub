@@ -76,8 +76,17 @@ export default function DailyLogModal({ open, log, onClose }: Props) {
         <Form.Item name="date" label="Date" rules={[{ required: true, message: 'Select a date' }]}>
           <DatePicker style={{ width: '100%' }} />
         </Form.Item>
-        <Form.Item name="hours" label="Hours" rules={[{ required: true, message: 'Enter hours' }]}>
-          <InputNumber style={{ width: '100%' }} min={0.5} max={24} step={0.5} />
+        <Form.Item
+          name="hours"
+          label="Hours"
+          extra="Maximum 24 hours"
+          hasFeedback
+          rules={[
+            { required: true, message: 'Enter hours' },
+            { type: 'number', max: 24, message: 'Hours cannot exceed 24' },
+          ]}
+        >
+          <InputNumber style={{ width: '100%' }} min={0.5} step={0.5} />
         </Form.Item>
         <Form.Item
           name="project"
