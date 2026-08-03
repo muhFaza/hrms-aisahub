@@ -5,7 +5,7 @@ import { HttpError } from '../../lib/httpError';
 import type { AuthUser } from '../../middleware/auth';
 import { countWorkingDays, offDayHolidayKeys } from '../../lib/workingDays';
 import { ensureAccrualsUpToDate, getBalanceBreakdown, planFifoAllocation } from '../../lib/accrual';
-import { assertPeriodEditable } from '../../lib/periodLock';
+import { assertPeriodRangeEditable } from '../../lib/periodLock';
 import { currentlyEmployedFilter } from '../../lib/employment';
 import { emitToHr, resolveGroup } from '../notifications/emit';
 import type { CreateLeaveInput, ListLeaveQuery } from './schemas';
@@ -130,6 +130,8 @@ export async function submitLeave(actor: AuthUser, input: CreateLeaveInput) {
     // exclusion constraint to catch it. Defence in depth: the conditional increment in
     // consumePaidLeave and the CHECK constraint still stand behind this.
     await tx.$queryRaw`SELECT id FROM "Employee" WHERE id = ${employee.id} FOR UPDATE`;
+
+    await assertPeriodRangeEditable(startDate, endDate, tx);
 
     // Every stored row is leave that is taken, so any overlap is a double-booking.
     const overlap = await tx.leaveRequest.findFirst({
@@ -303,7 +305,7 @@ export async function cancelLeave(id: number, actor: AuthUser) {
   await prisma.$transaction(async (tx) => {
     // Read through the transaction: payroll must not be able to finalize the month
     // between this check and the refund it guards.
-    await assertPeriodEditable(request.startDate, tx);
+    await assertPeriodRangeEditable(request.startDate, request.endDate, tx);
 
     const resolved = await resolveGroup(tx, 'LEAVE_REQUEST', id, actor.userId);
     if (request.type === 'PAID') {

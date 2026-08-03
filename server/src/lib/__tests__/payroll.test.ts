@@ -20,8 +20,8 @@ function baseContext(overrides: Partial<ComputeContext> = {}): ComputeContext {
     leaves: [],
     holidays: [],
     exchangeRate: RATE,
-    year: 2026,
-    month: 7,
+    periodStart: d('2026-07-01'),
+    periodEnd: d('2026-07-31'),
     ...overrides,
   };
 }
@@ -296,6 +296,38 @@ describe('splitLeaveDeduction', () => {
     const split = splitLeaveDeduction({ sickDays: 0, unpaidDays: 0 }, 0);
     expect(Number.isNaN(split.sickDeduction)).toBe(false);
     expect(Number.isNaN(split.unpaidDeduction)).toBe(false);
+  });
+});
+
+describe('custom payroll range boundaries', () => {
+  it('includes both cutoff dates and excludes the adjacent calendar dates', () => {
+    const row = computePayslipRow(
+      partTime,
+      baseContext({
+        periodStart: d('2026-07-26'),
+        periodEnd: d('2026-08-25'),
+        dailyLogs: [
+          { id: 1, date: d('2026-07-25'), hours: 1 },
+          { id: 2, date: d('2026-07-26'), hours: 2 },
+          { id: 3, date: d('2026-08-25'), hours: 3 },
+          { id: 4, date: d('2026-08-26'), hours: 4 },
+        ],
+        reimbursements: [
+          { id: 5, date: d('2026-07-25'), amount: 100_000, status: 'APPROVED' },
+          { id: 6, date: d('2026-07-26'), amount: 200_000, status: 'APPROVED' },
+          { id: 7, date: d('2026-08-25'), amount: 300_000, status: 'APPROVED' },
+          { id: 8, date: d('2026-08-26'), amount: 400_000, status: 'APPROVED' },
+        ],
+      }),
+    );
+
+    expect(row.detail.dailyLogIds).toEqual([2, 3]);
+    expect(row.detail.dailyLogHours).toBe(5);
+    expect(row.reimbursementTotal).toBe(500_000);
+    expect(row.detail.attendance).toMatchObject({
+      periodStart: '2026-07-26',
+      periodEnd: '2026-08-25',
+    });
   });
 });
 

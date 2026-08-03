@@ -244,12 +244,20 @@ export async function finalizePeriod(year: number, month: number, finalizedById:
     data: {
       year,
       month,
+      ...calendarPeriodRange(year, month),
       exchangeRate: 16_000,
       status: 'FINALIZED',
       finalizedById,
       finalizedAt: new Date(),
     },
   });
+}
+
+export function calendarPeriodRange(year: number, month: number) {
+  return {
+    startDate: new Date(Date.UTC(year, month - 1, 1)),
+    endDate: new Date(Date.UTC(year, month, 0)),
+  };
 }
 
 // @db.Date columns are stored at UTC midnight; the services compare against that.

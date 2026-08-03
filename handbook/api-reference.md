@@ -137,7 +137,7 @@ an employee is ignored, not honoured.
 | DELETE | `/daily-logs/:id` | owner **or** HR | Delete |
 
 No `requireRole` appears in this router — all authorization lives in the service. Editing a
-log that moves it to a different month checks the payroll lock on **both** months.
+log that moves it to a different date checks the payroll lock on **both** dates.
 
 ## `overtime`
 
@@ -170,17 +170,18 @@ multer populates the multipart text fields first. That is why the schema uses `z
 | --- | --- | --- | --- |
 | GET | `/payroll/my-payslips` | any | Own finalized payslips |
 | GET | `/payroll/periods` | HR | List periods with payslip counts |
-| POST | `/payroll/periods` | HR | Create a DRAFT period, fetch the live rate |
+| POST | `/payroll/periods` | HR | Create a DRAFT with an optional custom date pair; omitted dates default to 26–25; fetch the live rate |
 | GET | `/payroll/periods/:id` | HR | Preview — computed live for DRAFT, read from snapshots for FINALIZED |
-| PATCH | `/payroll/periods/:id` | HR | Override the exchange rate |
-| POST | `/payroll/periods/:id/finalize` | HR | Snapshot payslips, notify every employee, lock the month |
+| PATCH | `/payroll/periods/:id` | HR | Override the exchange rate and/or both dates while DRAFT |
+| POST | `/payroll/periods/:id/finalize` | HR | Snapshot payslips, notify every employee, lock the stored range |
 | DELETE | `/payroll/periods/:id` | HR | Delete a DRAFT period |
 | GET | `/payroll/periods/:id/export/pdf` | HR | Payroll sheet PDF for the period |
 | GET | `/payroll/periods/:id/export/csv` | HR | Payment-gateway payout file |
 | GET | `/payroll/payslips/:id/export/pdf` | any | Payslip PDF — own, or any if HR |
 
 `/my-payslips` is registered before `/periods/:id` so it is not swallowed by the parameter
-route. Rate override and delete both return 409 unless the period is DRAFT.
+route. Rate/range updates and delete return 409 unless the period is DRAFT. Date pairs must
+be ordered, complete, and non-overlapping; malformed pairs return 400 and overlaps return 409.
 
 ### Exports
 
@@ -241,13 +242,13 @@ endpoint.
 
 **Errors** — `{ error: string }`, plus `details: [{path, message}]` for validation failures.
 Status codes: 400 validation, 401 auth, 403 role or ownership, 404 missing, 409 conflict
-(duplicate, or a finalized payroll month).
+(duplicate, overlapping payroll range, or a finalized payroll period).
 
 **Uploads** — 5 MB cap, MIME allowlist of PDF / JPEG / PNG. Two endpoints accept files:
 employee contracts (field `file`) and reimbursement evidence (field `evidence`). Uploaded
 files are **not** served statically — they are reachable only through the two authenticated
 download endpoints above.
 
-**Locked months** — once a payroll period is FINALIZED, any create, edit, review or cancel
-touching a record dated in that month returns
-`409 Payroll period YYYY-MM is finalized`.
+**Locked ranges** — once a payroll period is FINALIZED, any create, edit, review or cancel
+touching a record dated inside its stored range returns a 409 naming the labeled period and
+its Start/End dates.

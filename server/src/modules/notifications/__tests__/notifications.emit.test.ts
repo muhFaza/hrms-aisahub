@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { prisma } from '../../../config/prisma';
 import {
   authUser,
+  calendarPeriodRange,
   createEmployee,
   createEmployeeWithUser,
   createLeaveRequest,
@@ -34,7 +35,7 @@ const FUTURE_TUESDAY = '2027-03-02';
 
 async function draftPeriod(year: number, month: number) {
   return prisma.payrollPeriod.create({
-    data: { year, month, exchangeRate: 16_000, status: 'DRAFT' },
+    data: { year, month, ...calendarPeriodRange(year, month), exchangeRate: 16_000, status: 'DRAFT' },
   });
 }
 

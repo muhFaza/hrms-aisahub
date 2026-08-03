@@ -42,6 +42,33 @@ async function fullTimerWithThreeAccrualDays() {
 }
 
 describe('submitLeave', () => {
+  it('rejects a leave range that overlaps a finalized custom payroll period', async () => {
+    const hr = await createUser({ roleName: 'HR' });
+    const { employee, user } = await createEmployeeWithUser();
+    await prisma.payrollPeriod.create({
+      data: {
+        year: 2026,
+        month: 8,
+        startDate: utc('2026-07-26'),
+        endDate: utc('2026-08-25'),
+        exchangeRate: 16_000,
+        status: 'FINALIZED',
+        finalizedById: hr.id,
+        finalizedAt: new Date(),
+      },
+    });
+
+    await expect(
+      leaveService.submitLeave(authUser(user), {
+        type: 'SICK',
+        startDate: utc('2026-07-24'),
+        endDate: utc('2026-07-28'),
+        reason: null,
+      }),
+    ).rejects.toMatchObject({ status: 409, message: /2026-07-26 to 2026-08-25/ });
+    expect(await prisma.leaveRequest.count({ where: { employeeId: employee.id } })).toBe(0);
+  });
+
   it('rejects an account with no linked employee profile (400)', async () => {
     const hr = await createUser({ roleName: 'HR' });
     await expect(
@@ -619,8 +646,8 @@ describe('cancelLeave', () => {
   });
 
   it('blocks HR inside a finalized payroll period too (409)', async () => {
-    // HR is exempt from the date window, not from the month lock: unwinding leave in a
-    // closed month would contradict payslips that are already out.
+    // HR is exempt from the date window, not from the period lock: unwinding leave in a
+    // closed range would contradict payslips that are already out.
     const hr = await createUser({ roleName: 'HR' });
     const employee = await createEmployee();
     await finalizePeriod(2026, 7, hr.id);
@@ -647,6 +674,78 @@ describe('cancelLeave', () => {
     ).resolves.not.toBeNull();
     const after = await prisma.leaveAccrual.findUniqueOrThrow({ where: { id: accrual.id } });
     expect(Number(after.daysConsumed)).toBe(2);
+  });
+
+  it('locks both custom cutoff boundaries but leaves adjacent dates editable', async () => {
+    const hr = await createUser({ roleName: 'HR' });
+    const employee = await createEmployee();
+    await prisma.payrollPeriod.create({
+      data: {
+        year: 2026,
+        month: 8,
+        startDate: utc('2026-07-26'),
+        endDate: utc('2026-08-25'),
+        exchangeRate: 16_000,
+        status: 'FINALIZED',
+        finalizedById: hr.id,
+        finalizedAt: new Date(),
+      },
+    });
+
+    const before = await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-07-25',
+      endDate: '2026-07-25',
+      totalDays: 1,
+      type: 'SICK',
+    });
+    const start = await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-07-26',
+      endDate: '2026-07-26',
+      totalDays: 1,
+      type: 'SICK',
+    });
+    const end = await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-08-25',
+      endDate: '2026-08-25',
+      totalDays: 1,
+      type: 'SICK',
+    });
+    const after = await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-08-26',
+      endDate: '2026-08-26',
+      totalDays: 1,
+      type: 'SICK',
+    });
+    const spanning = await createLeaveRequest({
+      employeeId: employee.id,
+      startDate: '2026-07-25',
+      endDate: '2026-07-27',
+      totalDays: 1,
+      type: 'SICK',
+    });
+
+    await expect(leaveService.cancelLeave(start.id, authUser(hr))).rejects.toMatchObject({
+      status: 409,
+      message: /2026-07-26 to 2026-08-25/,
+    });
+    await expect(leaveService.cancelLeave(end.id, authUser(hr))).rejects.toMatchObject({
+      status: 409,
+    });
+    await expect(leaveService.cancelLeave(spanning.id, authUser(hr))).rejects.toMatchObject({
+      status: 409,
+    });
+    await leaveService.cancelLeave(before.id, authUser(hr));
+    await leaveService.cancelLeave(after.id, authUser(hr));
+
+    expect(await prisma.leaveRequest.findUnique({ where: { id: before.id } })).toBeNull();
+    expect(await prisma.leaveRequest.findUnique({ where: { id: after.id } })).toBeNull();
+    expect(await prisma.leaveRequest.findUnique({ where: { id: start.id } })).not.toBeNull();
+    expect(await prisma.leaveRequest.findUnique({ where: { id: end.id } })).not.toBeNull();
+    expect(await prisma.leaveRequest.findUnique({ where: { id: spanning.id } })).not.toBeNull();
   });
 
   // cancelLeave is deliberately not gated on employment type. Leave history survives an

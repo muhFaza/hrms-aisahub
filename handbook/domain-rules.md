@@ -173,8 +173,8 @@ that is taken, effective the moment it is submitted. There is no `status` column
   date has passed the leave is taken, and the attempt is rejected with 400.
 - **HR is exempt from that date window** and may cancel past-dated leave as an override
   correction.
-- **HR is not exempt from the payroll month lock.** Cancelling is blocked for everyone if
-  the leave's **start month** is in a finalized payroll period — payslips are already out.
+- **HR is not exempt from the payroll range lock.** Cancelling is blocked for everyone if
+  any part of the leave range overlaps a finalized payroll period — payslips are already out.
 - The human coordination approval used to force now lives in the client: submitting opens a
   confirmation step reminding the employee to clear the dates with their team and project
   manager first. It is a nudge, not an audit trail; nothing about it is stored.
@@ -210,7 +210,17 @@ See [Notifications](notifications.md).
 
 ### Periods
 
-One period per calendar `(year, month)`, unique. All period administration is HR-only.
+One labeled period per `(year, month)`, unique. Each period stores inclusive `startDate` and
+`endDate` boundaries. New periods default to the 26th of the previous month through the 25th
+of the labeled month; August 2026 therefore defaults to 2026-07-26–2026-08-25. HR may supply
+custom dates and may edit both together while the period is DRAFT. FINALIZED ranges are
+immutable. Ranges cannot overlap and Start must not be after End. All period administration
+is HR-only.
+
+The migration preserves every existing period's calendar-month boundaries so historical
+payslips do not change meaning. Consequently, the first new 26–25 period after deployment may
+overlap the last legacy calendar period; HR must choose the first uncovered start date for that
+one transition period. Later defaults align normally.
 
 | | DRAFT | FINALIZED |
 | --- | --- | --- |
@@ -224,22 +234,22 @@ payslip per employee, notifies each of them (one batched insert, not one per emp
 flips the status. Nothing is dispatched afterwards — if the transaction rolls back, no
 employee was told anything.
 
-### The month lock
+### The period-range lock
 
-Finalizing a period locks that calendar month. Any create, update, delete or review of a
-dated record in it returns `409 Payroll period YYYY-MM is finalized`. This covers overtime
+Finalizing a period locks its stored inclusive date range. Any create, update, delete or
+review of a dated record in it returns a 409 identifying the labeled period and range. This covers overtime
 (create/review/cancel), reimbursements (create/review/cancel), daily logs
-(create/update/delete) and leave (cancel).
-
-**Leave *submission* is not covered** — an employee can record leave dated inside a closed
-month, and it will not be reflected in the payslips already issued for it.
+(create/update/delete) and leave (submit/cancel). Leave is checked by full-range overlap,
+not only by its first day. Each guard takes a shared lock on overlapping payroll rows inside
+the same transaction as its mutation; finalization takes the exclusive lock, so neither can
+slip a source write between payroll calculation and the FINALIZED transition.
 
 ### Who gets a payslip
 
-Every employee whose **employment overlaps the month** — not merely everyone currently
-employed. Somebody terminated on the 12th still earns twelve days of that month, and the old
-`isActive` filter had no way to say so: it erased them from the month entirely, so their
-final partial month paid nothing. A part-timer with no logged hours still receives a
+Every employee whose **employment overlaps the stored range** — not merely everyone currently
+employed. Somebody terminated during it still earns the working days their employment covers,
+and the old `isActive` filter had no way to say so: it erased them from the period entirely,
+so their final partial pay was zero. A part-timer with no logged hours still receives a
 zero-value payslip.
 
 ### Proration
@@ -247,12 +257,13 @@ zero-value payslip.
 A full-timer's basic salary is prorated by the working days their employment actually covers:
 
 ```
-basicSalary = monthlySalary × workedWorkingDays / actualWorkingDaysInMonth
+basicSalary = monthlySalary × workedWorkingDays / workingDaysInPeriod
 ```
 
-Dividing by the month's **real** working-day count can never pay more than a full month or
-less than zero, so it needs no cap and no floor. Someone terminated on the final working day
-of the month is paid in full. Terminate-and-rehire inside one month sums both segments.
+Dividing by the stored range's **real** working-day count can never pay more than a full
+monthly salary or less than zero, so it needs no cap and no floor. Someone employed through
+the range's final working day is paid in full. Terminate-and-rehire inside one range sums
+both segments.
 
 Part-timers are not prorated — they are paid per logged hour, so their logs simply stop.
 
@@ -370,7 +381,7 @@ of working days.
 
 **Overtime pays a flat 1.0× multiplier** — there is no Indonesian statutory 1.5×/2× premium.
 
-**Sick deduction** clips cross-month requests to the period boundaries and excludes weekends
+**Sick deduction** clips requests to the stored period boundaries and excludes weekends
 and off-day holidays, so only the in-period working days deduct. Joint leave is worked, so a
 cuti bersama day inside the request does deduct.
 
@@ -433,7 +444,7 @@ The mirror image of overtime.
 - Exactly one log per employee per date, enforced by both a pre-check and a unique index.
 - 0.5–24 hours in half-hour steps; project required, notes optional.
 - Editable and deletable by the owner **or** HR. Moving a log to a different date re-checks
-  the payroll lock on **both** the old and the new month, plus the uniqueness clash at the
+  the payroll lock on **both** the old and the new date, plus the uniqueness clash at the
   destination.
 
 Since logs feed pay with no approval step and employees can edit their own, this is
@@ -471,7 +482,7 @@ Other rules:
 
 - `date` is unique globally — two holidays cannot share a date.
 - All employees can read; only HR can write.
-- Holiday mutations are **not** period-locked. Editing a holiday inside a finalized month is
+- Holiday mutations are **not** period-locked. Editing a holiday inside a finalized range is
   allowed, which is harmless because payslips are snapshots — including the attendance summary,
   which is frozen at finalize for exactly this reason.
 - Holidays affect payroll only indirectly, by shrinking the deducted sick/unpaid day count.
@@ -631,13 +642,12 @@ The design document is `docs/plans/2026-07-08-hrms-design.md`. These are recorde
 5. **Daily logs are employee-editable**, not HR-only as the design says. Combined with the
    absence of an approval step, employees edit their own pay input.
 
-6. **Leave submission bypasses the finalized-period lock**, unlike overtime, reimbursements
-   and daily logs which all check it on create.
+6. ~~**Leave submission bypasses the finalized-period lock.**~~ **Resolved.** Submission and
+   cancellation now lock every overlapping payroll period row and reject any overlap with a
+   finalized range.
 
-7. **The period lock only inspects a leave record's `startDate`.** Leave spanning a closed
-   month into an open one is judged solely by where it starts — so cancelling it can be
-   blocked despite it lying mostly in an open month, or allowed despite most of it lying in
-   a closed one.
+7. ~~**The period lock only inspects a leave record's `startDate`.**~~ **Resolved.** Leave uses
+   its full inclusive range for both submission and cancellation.
 
 8. **No proration rule exists for payroll**, in the code or the design. An employee hired in
    August, if active when a July period is finalized, receives a full July salary.

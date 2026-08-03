@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { requireRole } from '../../middleware/rbac';
 import { validate } from '../../middleware/validate';
 import { asyncHandler } from '../../lib/asyncHandler';
-import { createPeriodSchema, idParamSchema, patchRateSchema } from './schemas';
+import { createPeriodSchema, idParamSchema, patchPeriodSchema } from './schemas';
 import * as controller from './controller';
 
 // Mounted behind authenticate in index.ts. Period admin is HR-only; any employee reads
@@ -49,8 +49,8 @@ payrollRoutes.get(
 payrollRoutes.patch(
   '/periods/:id',
   requireRole('HR'),
-  validate({ params: idParamSchema, body: patchRateSchema }),
-  asyncHandler(controller.patchRate),
+  validate({ params: idParamSchema, body: patchPeriodSchema }),
+  asyncHandler(controller.patchPeriod),
 );
 payrollRoutes.post(
   '/periods/:id/finalize',

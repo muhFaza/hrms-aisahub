@@ -89,9 +89,10 @@ serving out a notice period. Never hand-write `endDate: null` as an employment f
 sites once disagreed about this, and the two that got it wrong stopped accrual the moment a
 future termination was recorded and refused leave to somebody auth had just admitted.
 
-**A finalized payroll month is frozen.** `assertPeriodEditable` guards create, update,
-delete and review across leave, overtime, reimbursements and daily logs. Any new
-dated-record mutation must call it.
+**A finalized payroll period's stored range is frozen.** `assertPeriodEditable` guards
+create, update, delete and review across leave, overtime, reimbursements and daily logs. Any
+new dated-record mutation must call it with the same transaction client that performs the
+write; otherwise the PostgreSQL row lock is released too early.
 
 **Business rules live in services, not controllers.** Controllers unwrap the request, call
 the service, set the status. If a controller is growing logic, move it.

@@ -140,11 +140,7 @@ stuck record. Full detail and citations in
   that an accrual expires before the leave begins.
 - **Leave taken in error is only recoverable by HR.** An employee cannot withdraw leave once
   its start date has passed; HR can, and the days are refunded. Inside a finalized payroll
-  month nobody can, so a mistake there needs a manual correction outside the app.
-- **Leave submission is the one mutation that does not check the payroll lock.** Leave can
-  be recorded into a closed month, where it will not affect the payslips already issued.
-- **The payroll lock only inspects a leave record's start date.** Leave spanning a closed
-  month into an open one is judged solely by where it starts.
+  range nobody can, so a mistake there needs a manual correction outside the app.
 - **Unused accrual days expire silently** and cannot be reclaimed.
 - **THR is a flag with no rule behind it** — statutory in Indonesia, never computed here.
 

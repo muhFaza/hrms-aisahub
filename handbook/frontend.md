@@ -135,9 +135,10 @@ modal keeps its confirm button disabled until a reason is typed.
 The reimbursement upload uses `beforeUpload={() => false}` so the file is held and sent in
 the FormData rather than uploaded separately.
 
-**Payroll** — the periods table, a create modal explaining the FX behaviour, then a detail
-page. DRAFT shows an editable rate, **Save rate**, **Delete** and **Finalize**; FINALIZED
-replaces them with a lock line. Every payslip row expands into a plain-language breakdown.
+**Payroll** — the periods table, a create modal explaining the FX behaviour and defaulting
+editable Start/End Period pickers to 26–25, then a detail page. DRAFT shows editable dates,
+an editable rate, **Delete** and **Finalize**; FINALIZED replaces the date controls with the
+stored range and a lock line. Every payslip row expands into a plain-language breakdown.
 The finalize confirmation spells out all three consequences and that it cannot be undone.
 
 **Payslips** — period, IDR total, USD total, with the same expandable breakdown. There is

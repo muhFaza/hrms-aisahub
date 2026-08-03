@@ -12,7 +12,6 @@ import {
   formatIdr,
   formatPeriod,
   formatUsd,
-  periodBounds,
   type Doc,
 } from './theme';
 
@@ -34,6 +33,8 @@ export interface PayrollSheetRow {
 export interface PayrollSheetData {
   year: number;
   month: number;
+  startDate: string;
+  endDate: string;
   status: string;
   exchangeRate: number;
   rateSource: string;
@@ -101,12 +102,11 @@ export async function renderPayrollSheet(data: PayrollSheetData): Promise<Buffer
 
   let y = drawHeader(doc, 'Payroll Sheet', formatPeriod(data.year, data.month));
 
-  const bounds = periodBounds(data.year, data.month);
   const fieldWidth = 150;
   drawField(
     doc,
     'Pay period',
-    formatDateRange(bounds.start, bounds.end),
+    formatDateRange(data.startDate, data.endDate),
     PAGE_MARGIN,
     y,
     fieldWidth * 1.4,

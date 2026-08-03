@@ -1,14 +1,13 @@
 import type { Request, Response } from 'express';
 import * as payrollService from './service';
-import type { CreatePeriodInput, PatchRateInput } from './schemas';
+import type { CreatePeriodInput, PatchPeriodInput } from './schemas';
 
 export async function listPeriods(_req: Request, res: Response): Promise<void> {
   res.json(await payrollService.listPeriods());
 }
 
 export async function createPeriod(req: Request, res: Response): Promise<void> {
-  const { year, month } = req.body as CreatePeriodInput;
-  res.status(201).json(await payrollService.createPeriod(year, month));
+  res.status(201).json(await payrollService.createPeriod(req.body as CreatePeriodInput));
 }
 
 export async function getPeriod(req: Request, res: Response): Promise<void> {
@@ -16,10 +15,9 @@ export async function getPeriod(req: Request, res: Response): Promise<void> {
   res.json(await payrollService.getPeriodPreview(id));
 }
 
-export async function patchRate(req: Request, res: Response): Promise<void> {
+export async function patchPeriod(req: Request, res: Response): Promise<void> {
   const id = Number(req.params.id);
-  const { exchangeRate } = req.body as PatchRateInput;
-  res.json(await payrollService.patchRate(id, exchangeRate));
+  res.json(await payrollService.patchPeriod(id, req.body as PatchPeriodInput));
 }
 
 export async function finalize(req: Request, res: Response): Promise<void> {

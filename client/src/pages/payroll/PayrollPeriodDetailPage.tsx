@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   Button,
   Card,
+  DatePicker,
   InputNumber,
   Modal,
   Popconfirm,
@@ -16,6 +17,7 @@ import {
 import { ArrowLeftOutlined, DownloadOutlined, FilePdfOutlined, LockOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { AxiosError } from 'axios';
+import dayjs, { type Dayjs } from 'dayjs';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   exportPayslipPdf,
@@ -24,12 +26,12 @@ import {
   useDeletePeriod,
   useFinalizePeriod,
   usePayrollPreview,
-  useUpdateRate,
+  useUpdatePeriod,
   payrollStatusColor,
   rateSourceColor,
   type PayslipRow,
 } from '../../api/payroll';
-import { formatIDR, formatPeriod, formatUSD } from '../../lib/format';
+import { formatDate, formatIDR, formatPeriod, formatUSD } from '../../lib/format';
 import { downloadErrorMessage } from '../../lib/download';
 import PayslipBreakdown from './PayslipBreakdown';
 
@@ -43,18 +45,31 @@ export default function PayrollPeriodDetailPage() {
   const { id } = useParams<{ id: string }>();
   const periodId = id ? Number(id) : undefined;
   const { data, isLoading, isError } = usePayrollPreview(periodId);
-  const updateRate = useUpdateRate();
+  const updateRate = useUpdatePeriod();
+  const updateDates = useUpdatePeriod();
   const finalizePeriod = useFinalizePeriod();
   const deletePeriod = useDeletePeriod();
 
   const [rate, setRate] = useState<number | null>(null);
+  const [startPeriod, setStartPeriod] = useState<Dayjs | null>(null);
+  const [endPeriod, setEndPeriod] = useState<Dayjs | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [exporting, setExporting] = useState<'pdf' | 'csv' | null>(null);
   const [payslipExporting, setPayslipExporting] = useState<number | null>(null);
+  const storedRate = data?.period.exchangeRate;
+  const storedStartDate = data?.period.startDate;
+  const storedEndDate = data?.period.endDate;
 
   useEffect(() => {
-    if (data) setRate(data.period.exchangeRate);
-  }, [data]);
+    if (storedRate !== undefined) setRate(storedRate);
+  }, [storedRate]);
+
+  useEffect(() => {
+    if (storedStartDate && storedEndDate) {
+      setStartPeriod(dayjs(storedStartDate));
+      setEndPeriod(dayjs(storedEndDate));
+    }
+  }, [storedStartDate, storedEndDate]);
 
   if (isLoading) {
     return (
@@ -69,6 +84,18 @@ export default function PayrollPeriodDetailPage() {
 
   const { period, rows, totals } = data;
   const isDraft = period.status === 'DRAFT';
+  const invalidRange = Boolean(
+    startPeriod && endPeriod && endPeriod.isBefore(startPeriod, 'day'),
+  );
+  const datesChanged = Boolean(
+    startPeriod &&
+      endPeriod &&
+      (startPeriod.format('YYYY-MM-DD') !== period.startDate ||
+        endPeriod.format('YYYY-MM-DD') !== period.endDate),
+  );
+  const rateChanged = rate !== null && rate !== period.exchangeRate;
+  const hasUnsavedPayrollSettings =
+    rateChanged || datesChanged || !startPeriod || !endPeriod || invalidRange;
 
   async function handleSaveRate(): Promise<void> {
     if (periodId === undefined || rate === null) return;
@@ -80,12 +107,33 @@ export default function PayrollPeriodDetailPage() {
     }
   }
 
+  async function handleSaveDates(): Promise<void> {
+    if (
+      periodId === undefined ||
+      !startPeriod ||
+      !endPeriod ||
+      endPeriod.isBefore(startPeriod, 'day')
+    ) {
+      return;
+    }
+    try {
+      await updateDates.mutateAsync({
+        id: periodId,
+        startDate: startPeriod.format('YYYY-MM-DD'),
+        endDate: endPeriod.format('YYYY-MM-DD'),
+      });
+      message.success('Payroll period dates updated');
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to update payroll period dates'));
+    }
+  }
+
   async function handleFinalize(): Promise<void> {
     if (periodId === undefined) return;
     try {
       await finalizePeriod.mutateAsync(periodId);
       setConfirmOpen(false);
-      message.success('Period finalized — payslips created and emails dispatched');
+      message.success('Period finalized — payslips created and employees notified');
     } catch (err) {
       message.error(errorMessage(err, 'Failed to finalize'));
     }
@@ -226,14 +274,18 @@ export default function PayrollPeriodDetailPage() {
                   Delete
                 </Button>
               </Popconfirm>
-              <Button type="primary" onClick={() => setConfirmOpen(true)}>
+              <Button
+                type="primary"
+                onClick={() => setConfirmOpen(true)}
+                disabled={hasUnsavedPayrollSettings}
+              >
                 Finalize
               </Button>
             </Space>
           ) : (
             <Space>
               <Typography.Text type="secondary">
-                <LockOutlined /> Finalized — records for this month are locked. Rate{' '}
+                <LockOutlined /> Finalized — records in this pay period are locked. Rate{' '}
                 {formatIDR(period.exchangeRate)}/USD.
               </Typography.Text>
               <Button
@@ -252,6 +304,53 @@ export default function PayrollPeriodDetailPage() {
                 Payout file (CSV)
               </Button>
             </Space>
+          )}
+        </div>
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
+          {isDraft ? (
+            <Space wrap align="end" size="middle">
+              <Space direction="vertical" size={4}>
+                <Typography.Text type="secondary">Start Period</Typography.Text>
+                <DatePicker
+                  value={startPeriod}
+                  onChange={setStartPeriod}
+                  format="DD MMM YYYY"
+                />
+              </Space>
+              <Space direction="vertical" size={4}>
+                <Typography.Text type={invalidRange ? 'danger' : 'secondary'}>
+                  End Period
+                </Typography.Text>
+                <DatePicker
+                  value={endPeriod}
+                  onChange={setEndPeriod}
+                  format="DD MMM YYYY"
+                  status={invalidRange ? 'error' : undefined}
+                />
+              </Space>
+              <Button
+                onClick={handleSaveDates}
+                loading={updateDates.isPending}
+                disabled={!startPeriod || !endPeriod || invalidRange || !datesChanged}
+              >
+                Save period dates
+              </Button>
+              {invalidRange && (
+                <Typography.Text type="danger">
+                  End Period must be on or after Start Period.
+                </Typography.Text>
+              )}
+              {hasUnsavedPayrollSettings && !invalidRange && (
+                <Typography.Text type="warning">
+                  Save the period dates and exchange rate before finalizing.
+                </Typography.Text>
+              )}
+            </Space>
+          ) : (
+            <Typography.Text>
+              Pay period: <strong>{formatDate(period.startDate)}</strong> –{' '}
+              <strong>{formatDate(period.endDate)}</strong>
+            </Typography.Text>
           )}
         </div>
       </Card>
@@ -301,8 +400,11 @@ export default function PayrollPeriodDetailPage() {
         </p>
         <ul>
           <li>Snapshot {totals.count} payslip(s) with the current exchange rate.</li>
-          <li>Lock all source records dated in this month from further edits.</li>
-          <li>Email each employee their payslip.</li>
+          <li>
+            Lock all source records dated {formatDate(period.startDate)}–
+            {formatDate(period.endDate)} from further edits.
+          </li>
+          <li>Notify each employee that their payslip is available.</li>
         </ul>
         <p>This action cannot be undone.</p>
       </Modal>

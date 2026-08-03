@@ -36,6 +36,8 @@ function sheet(rows: PayrollSheetRow[]) {
   return {
     year: 2026,
     month: 6,
+    startDate: '2026-06-01',
+    endDate: '2026-06-30',
     status: 'FINALIZED',
     exchangeRate: 16_000,
     rateSource: 'API',
@@ -114,6 +116,16 @@ describe('payroll sheet PDF', () => {
 
   it('renders an empty period without throwing', async () => {
     expectPdf(await renderPayrollSheet(sheet([])));
+  });
+
+  it('renders a custom cross-month pay period', async () => {
+    expectPdf(
+      await renderPayrollSheet({
+        ...sheet([sheetRow()]),
+        startDate: '2026-07-26',
+        endDate: '2026-08-25',
+      }),
+    );
   });
 
   it('renders a part-timer row and a zero-deduction row', async () => {

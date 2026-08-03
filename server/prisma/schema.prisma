@@ -261,6 +261,8 @@ model PayrollPeriod {
   id            Int           @id @default(autoincrement())
   year          Int
   month         Int
+  startDate     DateTime      @db.Date
+  endDate       DateTime      @db.Date
   exchangeRate  Decimal       @db.Decimal(15, 4) // IDR per USD
   rateSource    String        @default("API") // API | FALLBACK | MANUAL (design §4 / Phase 5)
   status        PayrollStatus @default(DRAFT)

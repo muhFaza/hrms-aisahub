@@ -10,6 +10,8 @@ export interface PayrollPeriod {
   id: number;
   year: number;
   month: number;
+  startDate: string;
+  endDate: string;
   exchangeRate: number;
   rateSource: RateSource;
   status: PayrollStatus;
@@ -139,7 +141,12 @@ function usePayrollInvalidation() {
 export function useCreatePeriod() {
   const invalidate = usePayrollInvalidation();
   return useMutation({
-    mutationFn: async (payload: { year: number; month: number }) => {
+    mutationFn: async (payload: {
+      year: number;
+      month: number;
+      startDate: string;
+      endDate: string;
+    }) => {
       const { data } = await apiClient.post<PayrollPeriod>('/payroll/periods', payload);
       return data;
     },
@@ -147,13 +154,19 @@ export function useCreatePeriod() {
   });
 }
 
-export function useUpdateRate() {
+export function useUpdatePeriod() {
   const invalidate = usePayrollInvalidation();
   return useMutation({
-    mutationFn: async ({ id, exchangeRate }: { id: number; exchangeRate: number }) => {
-      const { data } = await apiClient.patch<PayrollPeriod>(`/payroll/periods/${id}`, {
-        exchangeRate,
-      });
+    mutationFn: async ({
+      id,
+      ...payload
+    }: {
+      id: number;
+      exchangeRate?: number;
+      startDate?: string;
+      endDate?: string;
+    }) => {
+      const { data } = await apiClient.patch<PayrollPeriod>(`/payroll/periods/${id}`, payload);
       return data;
     },
     onSuccess: invalidate,

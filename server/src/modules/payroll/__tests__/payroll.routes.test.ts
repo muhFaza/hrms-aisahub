@@ -1,10 +1,12 @@
 import request from 'supertest';
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../../../app';
 import { prisma } from '../../../config/prisma';
 import {
+  calendarPeriodRange,
   createEmployeeWithUser,
   createUser,
+  finalizePeriod,
   resetDb,
   signToken,
 } from '../../../__tests__/helpers/factories';
@@ -16,7 +18,16 @@ const API = '/api/v1/payroll';
 
 beforeEach(async () => {
   await resetDb();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ rates: { IDR: 16_000 } }),
+    }),
+  );
 });
+
+afterEach(() => vi.unstubAllGlobals());
 
 afterAll(async () => {
   await prisma.$disconnect();
@@ -36,7 +47,13 @@ async function finalizedPeriod(options: { monthlySalary?: number } = {}) {
     monthlySalary: options.monthlySalary ?? 12_000_000,
   });
   const period = await prisma.payrollPeriod.create({
-    data: { year: 2026, month: 6, exchangeRate: 16_000, status: 'DRAFT' },
+    data: {
+      year: 2026,
+      month: 6,
+      ...calendarPeriodRange(2026, 6),
+      exchangeRate: 16_000,
+      status: 'DRAFT',
+    },
   });
   await payrollService.finalizePeriod(period.id, hr.userId);
   const payslip = await prisma.payslip.findFirstOrThrow({
@@ -44,6 +61,202 @@ async function finalizedPeriod(options: { monthlySalary?: number } = {}) {
   });
   return { hr, employee, user, period, payslip };
 }
+
+describe('payroll period date administration', () => {
+  it('defaults August 2026 to 26 July through 25 August when dates are omitted', async () => {
+    const hr = await hrToken();
+    const res = await request(app)
+      .post(`${API}/periods`)
+      .set('Authorization', `Bearer ${hr.token}`)
+      .send({ year: 2026, month: 8 });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ startDate: '2026-07-26', endDate: '2026-08-25' });
+    const stored = await prisma.payrollPeriod.findUniqueOrThrow({ where: { id: res.body.id } });
+    expect(stored.startDate.toISOString().slice(0, 10)).toBe('2026-07-26');
+    expect(stored.endDate.toISOString().slice(0, 10)).toBe('2026-08-25');
+  });
+
+  it('handles the default cutoff across the January year boundary', async () => {
+    const hr = await hrToken();
+    const res = await request(app)
+      .post(`${API}/periods`)
+      .set('Authorization', `Bearer ${hr.token}`)
+      .send({ year: 2027, month: 1 });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ startDate: '2026-12-26', endDate: '2027-01-25' });
+  });
+
+  it('stores an explicit custom date pair', async () => {
+    const hr = await hrToken();
+    const res = await request(app)
+      .post(`${API}/periods`)
+      .set('Authorization', `Bearer ${hr.token}`)
+      .send({
+        year: 2026,
+        month: 8,
+        startDate: '2026-07-28',
+        endDate: '2026-08-24',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ startDate: '2026-07-28', endDate: '2026-08-24' });
+  });
+
+  it.each([
+    { startDate: '2026-08-25' },
+    { endDate: '2026-08-25' },
+    { startDate: '2026-08-26', endDate: '2026-08-25' },
+    { startDate: '2026-02-31', endDate: '2026-03-25' },
+  ])('rejects invalid or incomplete create ranges and stores nothing (%j)', async (range) => {
+    const hr = await hrToken();
+    const res = await request(app)
+      .post(`${API}/periods`)
+      .set('Authorization', `Bearer ${hr.token}`)
+      .send({ year: 2026, month: 8, ...range });
+
+    expect(res.status).toBe(400);
+    expect(await prisma.payrollPeriod.count()).toBe(0);
+  });
+
+  it('updates both dates on a DRAFT period', async () => {
+    const hr = await hrToken();
+    const period = await prisma.payrollPeriod.create({
+      data: {
+        year: 2026,
+        month: 8,
+        ...calendarPeriodRange(2026, 8),
+        exchangeRate: 16_000,
+        status: 'DRAFT',
+      },
+    });
+
+    const res = await request(app)
+      .patch(`${API}/periods/${period.id}`)
+      .set('Authorization', `Bearer ${hr.token}`)
+      .send({ startDate: '2026-07-26', endDate: '2026-08-25' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ startDate: '2026-07-26', endDate: '2026-08-25' });
+  });
+
+  it('keeps the existing exchange-rate update behavior on the consolidated PATCH route', async () => {
+    const hr = await hrToken();
+    const period = await prisma.payrollPeriod.create({
+      data: {
+        year: 2026,
+        month: 8,
+        ...calendarPeriodRange(2026, 8),
+        exchangeRate: 16_000,
+        status: 'DRAFT',
+      },
+    });
+
+    const res = await request(app)
+      .patch(`${API}/periods/${period.id}`)
+      .set('Authorization', `Bearer ${hr.token}`)
+      .send({ exchangeRate: 17_000 });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      exchangeRate: 17_000,
+      rateSource: 'MANUAL',
+      startDate: '2026-08-01',
+      endDate: '2026-08-31',
+    });
+  });
+
+  it('rejects a one-sided DRAFT range update and leaves stored dates unchanged', async () => {
+    const hr = await hrToken();
+    const period = await prisma.payrollPeriod.create({
+      data: {
+        year: 2026,
+        month: 8,
+        ...calendarPeriodRange(2026, 8),
+        exchangeRate: 16_000,
+        status: 'DRAFT',
+      },
+    });
+
+    const res = await request(app)
+      .patch(`${API}/periods/${period.id}`)
+      .set('Authorization', `Bearer ${hr.token}`)
+      .send({ startDate: '2026-07-26' });
+
+    expect(res.status).toBe(400);
+    const stored = await prisma.payrollPeriod.findUniqueOrThrow({ where: { id: period.id } });
+    expect(stored.startDate.toISOString().slice(0, 10)).toBe('2026-08-01');
+    expect(stored.endDate.toISOString().slice(0, 10)).toBe('2026-08-31');
+  });
+
+  it('rejects a FINALIZED date update and leaves the stored range unchanged', async () => {
+    const hr = await hrToken();
+    const period = await finalizePeriod(2026, 8, hr.userId);
+
+    const res = await request(app)
+      .patch(`${API}/periods/${period.id}`)
+      .set('Authorization', `Bearer ${hr.token}`)
+      .send({ startDate: '2026-07-26', endDate: '2026-08-25' });
+
+    expect(res.status).toBe(409);
+    const stored = await prisma.payrollPeriod.findUniqueOrThrow({ where: { id: period.id } });
+    expect(stored.startDate.toISOString().slice(0, 10)).toBe('2026-08-01');
+    expect(stored.endDate.toISOString().slice(0, 10)).toBe('2026-08-31');
+  });
+
+  it('rejects an overlapping range and leaves the edited period unchanged', async () => {
+    const hr = await hrToken();
+    await prisma.payrollPeriod.create({
+      data: {
+        year: 2026,
+        month: 7,
+        ...calendarPeriodRange(2026, 7),
+        exchangeRate: 16_000,
+        status: 'FINALIZED',
+      },
+    });
+    const august = await prisma.payrollPeriod.create({
+      data: {
+        year: 2026,
+        month: 8,
+        ...calendarPeriodRange(2026, 8),
+        exchangeRate: 16_000,
+        status: 'DRAFT',
+      },
+    });
+
+    const res = await request(app)
+      .patch(`${API}/periods/${august.id}`)
+      .set('Authorization', `Bearer ${hr.token}`)
+      .send({ startDate: '2026-07-26', endDate: '2026-08-25' });
+
+    expect(res.status).toBe(409);
+    const stored = await prisma.payrollPeriod.findUniqueOrThrow({ where: { id: august.id } });
+    expect(stored.startDate.toISOString().slice(0, 10)).toBe('2026-08-01');
+    expect(stored.endDate.toISOString().slice(0, 10)).toBe('2026-08-31');
+  });
+
+  it('forbids an employee from editing period dates', async () => {
+    const employee = await createEmployeeWithUser();
+    const period = await prisma.payrollPeriod.create({
+      data: {
+        year: 2026,
+        month: 8,
+        ...calendarPeriodRange(2026, 8),
+        exchangeRate: 16_000,
+        status: 'DRAFT',
+      },
+    });
+
+    const res = await request(app)
+      .patch(`${API}/periods/${period.id}`)
+      .set('Authorization', `Bearer ${signToken(employee.user)}`)
+      .send({ startDate: '2026-07-26', endDate: '2026-08-25' });
+
+    expect(res.status).toBe(403);
+  });
+});
 
 describe('payroll export routes — authentication', () => {
   it.each([
@@ -134,7 +347,13 @@ describe('payroll export routes — HR-only period exports', () => {
   it.each(['pdf', 'csv'])('refuses to export a draft period as %s (409)', async (format) => {
     const hr = await hrToken();
     const draft = await prisma.payrollPeriod.create({
-      data: { year: 2026, month: 5, exchangeRate: 16_000, status: 'DRAFT' },
+      data: {
+        year: 2026,
+        month: 5,
+        ...calendarPeriodRange(2026, 5),
+        exchangeRate: 16_000,
+        status: 'DRAFT',
+      },
     });
     const res = await request(app)
       .get(`${API}/periods/${draft.id}/export/${format}`)
@@ -214,7 +433,13 @@ describe('payroll preview — payslipId', () => {
   it('omits payslipId on a draft period, which has no stored payslips', async () => {
     await createEmployeeWithUser();
     const draft = await prisma.payrollPeriod.create({
-      data: { year: 2026, month: 5, exchangeRate: 16_000, status: 'DRAFT' },
+      data: {
+        year: 2026,
+        month: 5,
+        ...calendarPeriodRange(2026, 5),
+        exchangeRate: 16_000,
+        status: 'DRAFT',
+      },
     });
     const preview = await payrollService.getPeriodPreview(draft.id);
     expect(preview.rows[0].payslipId).toBeUndefined();

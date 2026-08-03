@@ -65,13 +65,13 @@ export interface ComputeContext {
   reimbursements: ReimbursementRecord[];
   leaves: LeaveRecord[];
   holidays: HolidayLike[];
-  // The employee's employments overlapping this month — normally one, two if they were
+  // The employee's employments overlapping this period — normally one, two if they were
   // terminated and rehired within it. Optional, and an empty or absent list means "do not
   // prorate" rather than "pay nothing" — see prorateMonth for why that direction.
   employments?: EmploymentLike[];
   exchangeRate: number;
-  year: number;
-  month: number; // 1-12
+  periodStart: Date;
+  periodEnd: Date;
 }
 
 // Attendance for the pay period, frozen alongside the money at finalize time. Holidays are not
@@ -158,9 +158,9 @@ export function splitLeaveDeduction(
   };
 }
 
-// @db.Date values arrive as UTC midnight; read in UTC so period boundaries are stable.
-function inPeriod(date: Date, year: number, month: number): boolean {
-  return date.getUTCFullYear() === year && date.getUTCMonth() + 1 === month;
+// @db.Date values arrive as UTC midnight; both boundaries are inclusive.
+function inPeriod(date: Date, start: Date, end: Date): boolean {
+  return date >= start && date <= end;
 }
 
 function roundIdr(value: number): number {
@@ -171,18 +171,16 @@ function roundUsd(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-// Working days of the given leave types, clipped to the period month (a request can span
-// months — only the in-period days count). Weekends and off-day holidays are excluded; joint
+// Working days of the given leave types, clipped to the pay period (a request can span
+// boundaries — only the in-period days count). Weekends and off-day holidays are excluded; joint
 // leave is a working day and so does count against leave taken across it.
 function daysInPeriodByType(
   leaves: LeaveRecord[],
   types: readonly string[],
   holidays: Set<string>,
-  year: number,
-  month: number,
+  periodStart: Date,
+  periodEnd: Date,
 ): { days: number; ids: number[] } {
-  const periodStart = new Date(Date.UTC(year, month - 1, 1));
-  const periodEnd = new Date(Date.UTC(year, month, 0)); // last day of month
   let days = 0;
   const ids: number[] = [];
   for (const leave of leaves) {
@@ -223,9 +221,7 @@ function computeAttendance(
   ctx: ComputeContext,
   offDayKeys: Set<string>,
 ): PayslipAttendance {
-  const { year, month } = ctx;
-  const periodStart = new Date(Date.UTC(year, month - 1, 1));
-  const periodEnd = new Date(Date.UTC(year, month, 0));
+  const { periodStart, periodEnd } = ctx;
 
   // Counted over the parts of the month the employee was actually employed, not the whole
   // month. For anyone employed throughout — almost everybody — the segments are the whole
@@ -251,7 +247,9 @@ function computeAttendance(
 
   if (employee.employmentType === 'PART_TIME') {
     const loggedDates = new Set(
-      ctx.dailyLogs.filter((log) => inPeriod(log.date, year, month)).map((log) => toDateKey(log.date)),
+      ctx.dailyLogs
+        .filter((log) => inPeriod(log.date, periodStart, periodEnd))
+        .map((log) => toDateKey(log.date)),
     );
     return {
       periodStart: toDateKey(periodStart),
@@ -265,7 +263,13 @@ function computeAttendance(
     };
   }
 
-  const leaveDays = daysInPeriodByType(ctx.leaves, ALL_LEAVE, offDayKeys, year, month).days;
+  const leaveDays = daysInPeriodByType(
+    ctx.leaves,
+    ALL_LEAVE,
+    offDayKeys,
+    periodStart,
+    periodEnd,
+  ).days;
 
   return {
     periodStart: toDateKey(periodStart),
@@ -282,12 +286,12 @@ function computeAttendance(
 
 // Computes one payslip row for an employee against the period's gathered source data.
 export function computePayslipRow(employee: PayrollEmployee, ctx: ComputeContext): PayslipRow {
-  const { exchangeRate, year, month } = ctx;
+  const { exchangeRate, periodStart, periodEnd } = ctx;
   const offDayKeys = offDayHolidayKeys(ctx.holidays);
   const attendance = computeAttendance(employee, ctx, offDayKeys);
 
   const reimbursementsInPeriod = ctx.reimbursements.filter(
-    (r) => r.status === 'APPROVED' && inPeriod(r.date, year, month),
+    (r) => r.status === 'APPROVED' && inPeriod(r.date, periodStart, periodEnd),
   );
   const reimbursementTotal = roundIdr(
     reimbursementsInPeriod.reduce((sum, r) => sum + r.amount, 0),
@@ -305,13 +309,25 @@ export function computePayslipRow(employee: PayrollEmployee, ctx: ComputeContext
     const dailyRate = monthlySalary / 21;
 
     const overtimesInPeriod = ctx.overtimes.filter(
-      (o) => o.status === 'APPROVED' && inPeriod(o.date, year, month),
+      (o) => o.status === 'APPROVED' && inPeriod(o.date, periodStart, periodEnd),
     );
     const overtimeHours = overtimesInPeriod.reduce((sum, o) => sum + o.hours, 0);
     const overtimeIds = overtimesInPeriod.map((o) => o.id);
 
-    const sick = daysInPeriodByType(ctx.leaves, ['SICK'], offDayKeys, year, month);
-    const unpaid = daysInPeriodByType(ctx.leaves, ['UNPAID'], offDayKeys, year, month);
+    const sick = daysInPeriodByType(
+      ctx.leaves,
+      ['SICK'],
+      offDayKeys,
+      periodStart,
+      periodEnd,
+    );
+    const unpaid = daysInPeriodByType(
+      ctx.leaves,
+      ['UNPAID'],
+      offDayKeys,
+      periodStart,
+      periodEnd,
+    );
 
     // Proration for a partial month — someone who joined or was terminated part-way through.
     // Dividing by the month's real working-day count can never pay more than a full month or
@@ -319,8 +335,8 @@ export function computePayslipRow(employee: PayrollEmployee, ctx: ComputeContext
     // divisor differs from the 21 used for dailyRate just above.
     const proration = prorateMonth({
       employments: ctx.employments ?? [],
-      monthStart: new Date(Date.UTC(year, month - 1, 1)),
-      monthEnd: new Date(Date.UTC(year, month, 0)),
+      monthStart: periodStart,
+      monthEnd: periodEnd,
       holidayKeys: offDayKeys,
     });
     const partialMonth = !isFullMonth(proration);
@@ -371,7 +387,7 @@ export function computePayslipRow(employee: PayrollEmployee, ctx: ComputeContext
     };
   } else {
     const hourlyRate = Number(employee.hourlyRate ?? 0);
-    const logsInPeriod = ctx.dailyLogs.filter((l) => inPeriod(l.date, year, month));
+    const logsInPeriod = ctx.dailyLogs.filter((l) => inPeriod(l.date, periodStart, periodEnd));
     const dailyLogHours = logsInPeriod.reduce((sum, l) => sum + l.hours, 0);
     const dailyLogIds = logsInPeriod.map((l) => l.id);
 

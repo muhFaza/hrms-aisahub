@@ -90,22 +90,23 @@ run. **The application still uses cost 10.**
 | --- | --- | --- |
 | `__tests__/api.smoke.test.ts` | 10 | Full-stack: health, login paths, identical 401s, deactivated account, 403s, JSON 404 |
 | `lib/__tests__/accrualMath.test.ts` | 5 | Pure accrual maths — expiry, balance, FIFO allocation. No database |
-| `lib/__tests__/payroll.test.ts` | 7 | Pure payslip computation, both employment types. No database |
+| `lib/__tests__/payroll.test.ts` | 30 | Pure payslip computation, both employment types and custom inclusive ranges. No database |
+| `lib/__tests__/pdf.test.ts` | 26 | Payroll sheet and payslip PDF rendering, pagination, legacy snapshots and custom ranges |
 | `lib/__tests__/workingDays.test.ts` | 6 | Pure day counting, including holiday-on-weekend. No database |
 | `middleware/__tests__/auth.test.ts` | 14 | Header shape, signature and expiry, deactivation, and the database-over-token claims |
 | `middleware/__tests__/rbac.test.ts` | 7 | `requireRole` invoked directly. No database |
 | `modules/leave/__tests__/leave.routes.test.ts` | 13 | Leave through the full middleware chain |
-| `modules/leave/__tests__/leave.service.test.ts` | 32 | The deep suite — submit, FIFO consumption, cancel window, refund, scoping |
-| `modules/payroll/__tests__/payroll.service.test.ts` | 1 | Sick leave reaches the payslip on dates alone, with no status column |
+| `modules/leave/__tests__/leave.service.test.ts` | 48 | The deep suite — submit, FIFO consumption, cancel window, refund, scoping and payroll-range lock |
+| `modules/payroll/__tests__/payroll.routes.test.ts` | 32 | HR authorization, create/update range validation, overlap protection and PDF/CSV access |
+| `modules/payroll/__tests__/payroll.service.test.ts` | 13 | Payroll gathering, employment proration, cross-month cutoff inclusion and database range constraints |
 | `modules/users/__tests__/users.routes.test.ts` | 9 | Access, role-fixed-at-creation, demotion takes effect immediately |
 
 The auth, rbac and users tests are the regression tests for the two authorization fixes on
 this branch. Treat them as a pair with the fixes — they exist to stop those bugs returning.
 
-**Not covered:** the employees, holidays, daily-logs, overtime, reimbursements and
-dashboard modules; payroll beyond the one sick-leave case; file upload and download; path
-traversal. There is no
-coverage threshold configured.
+**Not covered:** parts of the holidays, daily-logs and dashboard modules; some file-download
+and path-traversal edge cases. File upload and the core payroll paths do have direct coverage.
+There is no coverage threshold configured.
 
 ---
 

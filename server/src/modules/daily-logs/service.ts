@@ -81,72 +81,80 @@ export async function createDailyLog(actor: AuthUser, input: DailyLogInput) {
   }
 
   const date = toUtcDate(input.date);
-  await assertPeriodEditable(date);
-  await assertEmployed(employee.id, date);
+  const created = await prisma.$transaction(async (tx) => {
+    await assertPeriodEditable(date, tx);
+    await assertEmployed(employee.id, date, tx);
 
-  const existing = await prisma.dailyLog.findUnique({
-    where: { employeeId_date: { employeeId: employee.id, date } },
-  });
-  if (existing) {
-    throw new HttpError(409, 'A daily log already exists for this date');
-  }
+    const existing = await tx.dailyLog.findUnique({
+      where: { employeeId_date: { employeeId: employee.id, date } },
+    });
+    if (existing) {
+      throw new HttpError(409, 'A daily log already exists for this date');
+    }
 
-  const created = await prisma.dailyLog.create({
-    data: {
-      employeeId: employee.id,
-      date,
-      hours: input.hours,
-      project: input.project,
-      notes: input.notes ?? null,
-    },
-    include: logInclude,
+    return tx.dailyLog.create({
+      data: {
+        employeeId: employee.id,
+        date,
+        hours: input.hours,
+        project: input.project,
+        notes: input.notes ?? null,
+      },
+      include: logInclude,
+    });
   });
   return serializeLog(created);
 }
 
 export async function updateDailyLog(id: number, actor: AuthUser, input: DailyLogInput) {
-  const log = await prisma.dailyLog.findUnique({ where: { id } });
-  if (!log) {
-    throw new HttpError(404, 'Daily log not found');
-  }
-  if (actor.roleName !== 'HR' && log.employeeId !== actor.employeeId) {
-    throw new HttpError(403, 'You can only edit your own daily logs');
-  }
-
   const nextDate = toUtcDate(input.date);
-  // Lock covers both the existing month and, if the date moves, the destination month.
-  await assertPeriodEditable(log.date);
-  if (nextDate.getTime() !== log.date.getTime()) {
-    await assertPeriodEditable(nextDate);
-    const clash = await prisma.dailyLog.findUnique({
-      where: { employeeId_date: { employeeId: log.employeeId, date: nextDate } },
-    });
-    if (clash) {
-      throw new HttpError(409, 'A daily log already exists for this date');
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "DailyLog" WHERE id = ${id} FOR UPDATE`;
+    const log = await tx.dailyLog.findUnique({ where: { id } });
+    if (!log) {
+      throw new HttpError(404, 'Daily log not found');
     }
-  }
+    if (actor.roleName !== 'HR' && log.employeeId !== actor.employeeId) {
+      throw new HttpError(403, 'You can only edit your own daily logs');
+    }
 
-  const updated = await prisma.dailyLog.update({
-    where: { id },
-    data: {
-      date: nextDate,
-      hours: input.hours,
-      project: input.project,
-      notes: input.notes ?? null,
-    },
-    include: logInclude,
+    // Lock covers both the existing period and, if the date moves, the destination period.
+    await assertPeriodEditable(log.date, tx);
+    if (nextDate.getTime() !== log.date.getTime()) {
+      await assertPeriodEditable(nextDate, tx);
+      const clash = await tx.dailyLog.findUnique({
+        where: { employeeId_date: { employeeId: log.employeeId, date: nextDate } },
+      });
+      if (clash) {
+        throw new HttpError(409, 'A daily log already exists for this date');
+      }
+    }
+
+    return tx.dailyLog.update({
+      where: { id },
+      data: {
+        date: nextDate,
+        hours: input.hours,
+        project: input.project,
+        notes: input.notes ?? null,
+      },
+      include: logInclude,
+    });
   });
   return serializeLog(updated);
 }
 
 export async function deleteDailyLog(id: number, actor: AuthUser) {
-  const log = await prisma.dailyLog.findUnique({ where: { id } });
-  if (!log) {
-    throw new HttpError(404, 'Daily log not found');
-  }
-  if (actor.roleName !== 'HR' && log.employeeId !== actor.employeeId) {
-    throw new HttpError(403, 'You can only delete your own daily logs');
-  }
-  await assertPeriodEditable(log.date);
-  await prisma.dailyLog.delete({ where: { id } });
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "DailyLog" WHERE id = ${id} FOR UPDATE`;
+    const log = await tx.dailyLog.findUnique({ where: { id } });
+    if (!log) {
+      throw new HttpError(404, 'Daily log not found');
+    }
+    if (actor.roleName !== 'HR' && log.employeeId !== actor.employeeId) {
+      throw new HttpError(403, 'You can only delete your own daily logs');
+    }
+    await assertPeriodEditable(log.date, tx);
+    await tx.dailyLog.delete({ where: { id } });
+  });
 }

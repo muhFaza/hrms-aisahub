@@ -101,16 +101,18 @@ register static routes before parameterized ones (`/leave/balance` must precede
 | `workingDays.ts` | `countWorkingDays` — pure, UTC, inclusive of both endpoints, excludes weekends and holidays |
 | `accrual.ts` | Leave accrual: pure maths (`computeBalance`, `planFifoAllocation`) plus the database-touching `ensureAccrualsUpToDate` / `getBalanceBreakdown` |
 | `payroll.ts` | `computePayslipRow` — deliberately database-free |
-| `periodLock.ts` | `assertPeriodEditable(date)` — throws 409 if that month's payroll is finalized |
+| `periodLock.ts` | Point/range guards — lock overlapping payroll rows and throw 409 for finalized ranges |
 | `fx.ts` | The one external HTTP call — USD→IDR, 5s timeout, returns `null` on every failure mode |
 
 Notification emission is deliberately **not** here: it reads the HR recipient list and
 writes rows, so it lives in `modules/notifications/emit.ts` rather than break the
 database-free rule.
 
-`periodLock` is worth internalising: it is called from leave cancel, daily-log
+`periodLock` is worth internalising: it is called from leave submit/cancel, daily-log
 create/update/delete, overtime create/review/cancel and reimbursement
-create/review/cancel. Finalizing a payroll month freezes every record dated in it.
+create/review/cancel. The guard and the protected write always share one transaction, so its
+row lock cannot be released before the mutation commits. Finalizing payroll freezes every
+record dated inside its stored range.
 
 ---
 

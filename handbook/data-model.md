@@ -113,15 +113,20 @@ An expense claim in IDR with a receipt file path, approved by HR, paid via payro
 `amount` has no CHECK for `> 0`.
 
 ### `PayrollPeriod`
-One payroll run for a year/month.
+One payroll run with a Year/Month label and an explicit inclusive date range.
 
 | Field | Notes |
 | --- | --- |
 | `year`, `month` | unique together. **No CHECK for month 1–12** — `month = 13` is storable |
+| `startDate`, `endDate` | PostgreSQL `date`, inclusive. CHECK enforces Start ≤ End and a GiST exclusion constraint prevents overlap with every other payroll period |
 | `exchangeRate` | `Decimal(15,4)` — IDR per USD, the only non-2dp decimal in the schema |
 | `rateSource` | `API` / `FALLBACK` / `MANUAL`. Plain `TEXT` with a default, **not an enum**, no CHECK |
 | `status` | `DRAFT` or `FINALIZED` |
 | `finalizedById` | nullable, `ON DELETE SET NULL` |
+
+New periods default to the previous month's 26th through the labeled month's 25th. HR can
+change both dates while DRAFT. The migration backfilled every legacy period to its original
+first and last calendar day so existing previews, payslips and locks did not shift.
 
 ### `Payslip`
 The immutable per-employee result, written when a period is finalized. Unique on

@@ -329,7 +329,15 @@ async function main() {
 
   // One DRAFT payroll period for June 2026 (design §8 seed fixture; payslips are created on finalize).
   await prisma.payrollPeriod.create({
-    data: { year: 2026, month: 6, exchangeRate: 16_250, rateSource: 'FALLBACK', status: 'DRAFT' },
+    data: {
+      year: 2026,
+      month: 6,
+      startDate: d('2026-06-01'),
+      endDate: d('2026-06-30'),
+      exchangeRate: 16_250,
+      rateSource: 'FALLBACK',
+      status: 'DRAFT',
+    },
   });
 
   console.log('Seed complete: 2 roles, 5 users, 4 employees, 20 holidays, sample data.');

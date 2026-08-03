@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { prisma } from '../../../config/prisma';
 import {
+  calendarPeriodRange,
   createEmployee,
   createHoliday,
   createLeaveRequest,
@@ -32,7 +33,14 @@ describe('payroll preview — sick leave', () => {
       type: 'SICK',
     });
     const period = await prisma.payrollPeriod.create({
-      data: { year: 2026, month: 7, exchangeRate: 16_000, rateSource: 'FALLBACK', status: 'DRAFT' },
+      data: {
+        year: 2026,
+        month: 7,
+        ...calendarPeriodRange(2026, 7),
+        exchangeRate: 16_000,
+        rateSource: 'FALLBACK',
+        status: 'DRAFT',
+      },
     });
 
     const preview = await payrollService.getPeriodPreview(period.id);
@@ -50,7 +58,14 @@ describe('payroll preview — sick leave', () => {
 describe('payroll preview — prorated final month', () => {
   async function augustPeriod() {
     return prisma.payrollPeriod.create({
-      data: { year: 2026, month: 8, exchangeRate: 16_000, rateSource: 'FALLBACK', status: 'DRAFT' },
+      data: {
+        year: 2026,
+        month: 8,
+        ...calendarPeriodRange(2026, 8),
+        exchangeRate: 16_000,
+        rateSource: 'FALLBACK',
+        status: 'DRAFT',
+      },
     });
   }
 
@@ -135,7 +150,14 @@ describe('payroll preview — prorated final month', () => {
 describe('payroll preview — proration interacting with leave', () => {
   async function septemberPeriod() {
     return prisma.payrollPeriod.create({
-      data: { year: 2026, month: 9, exchangeRate: 16_000, rateSource: 'FALLBACK', status: 'DRAFT' },
+      data: {
+        year: 2026,
+        month: 9,
+        ...calendarPeriodRange(2026, 9),
+        exchangeRate: 16_000,
+        rateSource: 'FALLBACK',
+        status: 'DRAFT',
+      },
     });
   }
 
@@ -235,5 +257,158 @@ describe('payroll preview — proration interacting with leave', () => {
     // "scheduled 22 / actual 22" beside "worked 11 of 22" is what an employee brings to HR.
     expect(row?.detail.attendance?.scheduledWorkingDays).toBe(11);
     expect(row?.detail.proration?.workedWorkingDays).toBe(11);
+  });
+});
+
+describe('payroll preview — custom cutoff range', () => {
+  it('includes both boundaries and excludes records immediately outside them', async () => {
+    const fullTime = await createEmployee({
+      monthlySalary: 21_000_000,
+      joinDate: utc('2025-01-01'),
+    });
+    const partTime = await prisma.employee.create({
+      data: {
+        fullName: 'Cutoff Part-timer',
+        joinDate: utc('2025-01-01'),
+        position: 'Designer',
+        employmentType: 'PART_TIME',
+        hourlyRate: 100_000,
+        employments: { create: { startDate: utc('2025-01-01') } },
+      },
+    });
+
+    for (const [date, hours] of [
+      ['2026-07-25', 1],
+      ['2026-07-26', 2],
+      ['2026-08-25', 3],
+      ['2026-08-26', 4],
+    ] as const) {
+      await prisma.overtime.create({
+        data: {
+          employeeId: fullTime.id,
+          date: utc(date),
+          hours,
+          status: 'APPROVED',
+          description: `Overtime ${date}`,
+        },
+      });
+      await prisma.dailyLog.create({
+        data: { employeeId: partTime.id, date: utc(date), hours, project: `Project ${date}` },
+      });
+    }
+
+    await prisma.reimbursement.createMany({
+      data: [
+        {
+          employeeId: fullTime.id,
+          date: utc('2026-07-25'),
+          amount: 100_000,
+          description: 'Before cutoff',
+          evidenceFilePath: 'before.pdf',
+          status: 'APPROVED',
+        },
+        {
+          employeeId: fullTime.id,
+          date: utc('2026-07-26'),
+          amount: 200_000,
+          description: 'Start boundary',
+          evidenceFilePath: 'start.pdf',
+          status: 'APPROVED',
+        },
+        {
+          employeeId: fullTime.id,
+          date: utc('2026-08-25'),
+          amount: 300_000,
+          description: 'End boundary',
+          evidenceFilePath: 'end.pdf',
+          status: 'APPROVED',
+        },
+        {
+          employeeId: fullTime.id,
+          date: utc('2026-08-26'),
+          amount: 400_000,
+          description: 'After cutoff',
+          evidenceFilePath: 'after.pdf',
+          status: 'APPROVED',
+        },
+      ],
+    });
+    await createLeaveRequest({
+      employeeId: fullTime.id,
+      startDate: '2026-07-24',
+      endDate: '2026-07-28',
+      totalDays: 3,
+      type: 'SICK',
+    });
+
+    const period = await prisma.payrollPeriod.create({
+      data: {
+        year: 2026,
+        month: 8,
+        startDate: utc('2026-07-26'),
+        endDate: utc('2026-08-25'),
+        exchangeRate: 16_000,
+        rateSource: 'FALLBACK',
+        status: 'DRAFT',
+      },
+    });
+    const preview = await payrollService.getPeriodPreview(period.id);
+    const fullTimeRow = preview.rows.find((row) => row.employeeId === fullTime.id);
+    const partTimeRow = preview.rows.find((row) => row.employeeId === partTime.id);
+
+    expect(fullTimeRow?.detail.overtimeHours).toBe(5);
+    expect(fullTimeRow?.reimbursementTotal).toBe(500_000);
+    expect(fullTimeRow?.detail.sickDays).toBe(2);
+    expect(fullTimeRow?.detail.attendance).toMatchObject({
+      periodStart: '2026-07-26',
+      periodEnd: '2026-08-25',
+    });
+    expect(partTimeRow?.detail.dailyLogHours).toBe(5);
+    expect(partTimeRow?.basicSalary).toBe(500_000);
+  });
+});
+
+describe('PayrollPeriod database range constraints', () => {
+  it('rejects overlapping ranges even when the service pre-check is bypassed', async () => {
+    await prisma.payrollPeriod.create({
+      data: {
+        year: 2026,
+        month: 8,
+        startDate: utc('2026-07-26'),
+        endDate: utc('2026-08-25'),
+        exchangeRate: 16_000,
+        status: 'DRAFT',
+      },
+    });
+
+    await expect(
+      prisma.payrollPeriod.create({
+        data: {
+          year: 2026,
+          month: 9,
+          startDate: utc('2026-08-25'),
+          endDate: utc('2026-09-25'),
+          exchangeRate: 16_000,
+          status: 'DRAFT',
+        },
+      }),
+    ).rejects.toThrow();
+    expect(await prisma.payrollPeriod.count()).toBe(1);
+  });
+
+  it('rejects a reversed range even when the service validation is bypassed', async () => {
+    await expect(
+      prisma.payrollPeriod.create({
+        data: {
+          year: 2026,
+          month: 8,
+          startDate: utc('2026-08-26'),
+          endDate: utc('2026-08-25'),
+          exchangeRate: 16_000,
+          status: 'DRAFT',
+        },
+      }),
+    ).rejects.toThrow();
+    expect(await prisma.payrollPeriod.count()).toBe(0);
   });
 });

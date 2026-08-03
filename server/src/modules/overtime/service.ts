@@ -80,19 +80,19 @@ export async function createOvertime(actor: AuthUser, input: CreateOvertimeInput
   }
 
   const date = toUtcDate(input.date);
-  await assertPeriodEditable(date);
-  await assertEmployed(employee.id, date);
-
-  // At most one pending/approved overtime entry per employee per date.
-  const existing = await prisma.overtime.findFirst({
-    where: { employeeId: employee.id, date, status: { in: ['PENDING', 'APPROVED'] } },
-  });
-  if (existing) {
-    throw new HttpError(409, 'An overtime entry already exists for this date');
-  }
-
   // One transaction: the entry and the HR notifications land together or not at all.
   const created = await prisma.$transaction(async (tx) => {
+    await assertPeriodEditable(date, tx);
+    await assertEmployed(employee.id, date, tx);
+
+    // At most one pending/approved overtime entry per employee per date.
+    const existing = await tx.overtime.findFirst({
+      where: { employeeId: employee.id, date, status: { in: ['PENDING', 'APPROVED'] } },
+    });
+    if (existing) {
+      throw new HttpError(409, 'An overtime entry already exists for this date');
+    }
+
     const overtime = await tx.overtime.create({
       data: {
         employeeId: employee.id,
@@ -120,16 +120,16 @@ export async function createOvertime(actor: AuthUser, input: CreateOvertimeInput
 }
 
 export async function reviewOvertime(id: number, reviewerUserId: number, input: ReviewOvertimeInput) {
-  const overtime = await prisma.overtime.findUnique({ where: { id } });
-  if (!overtime) {
-    throw new HttpError(404, 'Overtime entry not found');
-  }
-  if (overtime.status !== 'PENDING') {
-    throw new HttpError(400, 'Only pending overtime entries can be reviewed');
-  }
-  await assertPeriodEditable(overtime.date);
-
   const updated = await prisma.$transaction(async (tx) => {
+    const overtime = await tx.overtime.findUnique({ where: { id } });
+    if (!overtime) {
+      throw new HttpError(404, 'Overtime entry not found');
+    }
+    if (overtime.status !== 'PENDING') {
+      throw new HttpError(409, 'This overtime entry was already reviewed by someone else');
+    }
+    await assertPeriodEditable(overtime.date, tx);
+
     // Conditional transition: `status: 'PENDING'` in the WHERE is what makes two
     // reviewers racing each other resolve to exactly one winner. See reviewLeave.
     const claimed = await tx.overtime.updateMany({
@@ -174,19 +174,20 @@ export async function reviewOvertime(id: number, reviewerUserId: number, input: 
 }
 
 export async function cancelOvertime(id: number, actor: AuthUser) {
-  const overtime = await prisma.overtime.findUnique({ where: { id }, include: overtimeInclude });
-  if (!overtime) {
-    throw new HttpError(404, 'Overtime entry not found');
-  }
-  if (overtime.employeeId !== actor.employeeId) {
-    throw new HttpError(403, 'You can only cancel your own overtime entries');
-  }
-  if (overtime.status !== 'PENDING') {
-    throw new HttpError(400, 'Only pending overtime entries can be cancelled');
-  }
-  await assertPeriodEditable(overtime.date);
-
   await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Overtime" WHERE id = ${id} FOR UPDATE`;
+    const overtime = await tx.overtime.findUnique({ where: { id }, include: overtimeInclude });
+    if (!overtime) {
+      throw new HttpError(404, 'Overtime entry not found');
+    }
+    if (overtime.employeeId !== actor.employeeId) {
+      throw new HttpError(403, 'You can only cancel your own overtime entries');
+    }
+    if (overtime.status !== 'PENDING') {
+      throw new HttpError(400, 'Only pending overtime entries can be cancelled');
+    }
+    await assertPeriodEditable(overtime.date, tx);
+
     const resolved = await resolveGroup(tx, 'OVERTIME', id, actor.userId);
     await tx.overtime.delete({ where: { id } });
 

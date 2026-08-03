@@ -86,11 +86,11 @@ export async function createReimbursement(
   const employeeId = actor.employeeId;
 
   const date = toUtcDate(input.date);
-  await assertPeriodEditable(date);
-  await assertEmployed(employeeId, date);
-
   // One transaction: the claim and the HR notifications land together or not at all.
   const created = await prisma.$transaction(async (tx) => {
+    await assertPeriodEditable(date, tx);
+    await assertEmployed(employeeId, date, tx);
+
     const reimbursement = await tx.reimbursement.create({
       data: {
         employeeId,
@@ -124,16 +124,16 @@ export async function reviewReimbursement(
   reviewerUserId: number,
   input: ReviewReimbursementInput,
 ) {
-  const reimbursement = await prisma.reimbursement.findUnique({ where: { id } });
-  if (!reimbursement) {
-    throw new HttpError(404, 'Reimbursement not found');
-  }
-  if (reimbursement.status !== 'PENDING') {
-    throw new HttpError(400, 'Only pending reimbursements can be reviewed');
-  }
-  await assertPeriodEditable(reimbursement.date);
-
   const updated = await prisma.$transaction(async (tx) => {
+    const reimbursement = await tx.reimbursement.findUnique({ where: { id } });
+    if (!reimbursement) {
+      throw new HttpError(404, 'Reimbursement not found');
+    }
+    if (reimbursement.status !== 'PENDING') {
+      throw new HttpError(409, 'This reimbursement was already reviewed by someone else');
+    }
+    await assertPeriodEditable(reimbursement.date, tx);
+
     // Conditional transition: `status: 'PENDING'` in the WHERE is what makes two
     // reviewers racing each other resolve to exactly one winner. See reviewLeave.
     const claimed = await tx.reimbursement.updateMany({
@@ -178,22 +178,23 @@ export async function reviewReimbursement(
 }
 
 export async function cancelReimbursement(id: number, actor: AuthUser) {
-  const reimbursement = await prisma.reimbursement.findUnique({
-    where: { id },
-    include: reimbursementInclude,
-  });
-  if (!reimbursement) {
-    throw new HttpError(404, 'Reimbursement not found');
-  }
-  if (reimbursement.employeeId !== actor.employeeId) {
-    throw new HttpError(403, 'You can only cancel your own reimbursements');
-  }
-  if (reimbursement.status !== 'PENDING') {
-    throw new HttpError(400, 'Only pending reimbursements can be cancelled');
-  }
-  await assertPeriodEditable(reimbursement.date);
+  const evidenceFilePath = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Reimbursement" WHERE id = ${id} FOR UPDATE`;
+    const reimbursement = await tx.reimbursement.findUnique({
+      where: { id },
+      include: reimbursementInclude,
+    });
+    if (!reimbursement) {
+      throw new HttpError(404, 'Reimbursement not found');
+    }
+    if (reimbursement.employeeId !== actor.employeeId) {
+      throw new HttpError(403, 'You can only cancel your own reimbursements');
+    }
+    if (reimbursement.status !== 'PENDING') {
+      throw new HttpError(400, 'Only pending reimbursements can be cancelled');
+    }
+    await assertPeriodEditable(reimbursement.date, tx);
 
-  await prisma.$transaction(async (tx) => {
     const resolved = await resolveGroup(tx, 'REIMBURSEMENT', id, actor.userId);
     await tx.reimbursement.delete({ where: { id } });
 
@@ -206,10 +207,11 @@ export async function cancelReimbursement(id: number, actor: AuthUser) {
         payload: { employeeName: reimbursement.employee?.fullName ?? null, kind: 'REIMBURSEMENT' },
       });
     }
+    return reimbursement.evidenceFilePath;
   });
 
   // Only once the row is gone for good — the file is not recoverable.
-  removeUploadedFile(reimbursement.evidenceFilePath);
+  removeUploadedFile(evidenceFilePath);
 }
 
 // Resolves the on-disk evidence path for download; only HR or the owner may access it.

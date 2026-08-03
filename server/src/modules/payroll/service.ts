@@ -9,6 +9,7 @@ import { periodKey } from '../../lib/pdf/theme';
 import { renderPayoutCsv } from '../../lib/csv/payoutCsv';
 import { emitToEmployees, type EmployeeTarget } from '../notifications/emit';
 import { clipRangeToEmployments, isEmployedOnAny } from '../../lib/employment';
+import type { CreatePeriodInput, PatchPeriodInput } from './schemas';
 import {
   computePayslipRow,
   type ComputeContext,
@@ -19,11 +20,14 @@ import {
 
 // Used when the live FX lookup fails at period creation (design §4).
 const FALLBACK_RATE = 16_000;
+type PayrollDbClient = Prisma.TransactionClient | typeof prisma;
 
 interface PeriodSummary {
   id: number;
   year: number;
   month: number;
+  startDate: string;
+  endDate: string;
   exchangeRate: number;
   rateSource: string;
   status: string;
@@ -37,6 +41,8 @@ function serializePeriod(period: {
   id: number;
   year: number;
   month: number;
+  startDate: Date;
+  endDate: Date;
   exchangeRate: Prisma.Decimal;
   rateSource: string;
   status: string;
@@ -49,6 +55,8 @@ function serializePeriod(period: {
     id: period.id,
     year: period.year,
     month: period.month,
+    startDate: isoDate(period.startDate),
+    endDate: isoDate(period.endDate),
     exchangeRate: Number(period.exchangeRate),
     rateSource: period.rateSource,
     status: period.status,
@@ -59,6 +67,43 @@ function serializePeriod(period: {
   };
 }
 
+function isoDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function defaultPeriodRange(year: number, month: number): { startDate: Date; endDate: Date } {
+  return {
+    startDate: new Date(Date.UTC(year, month - 2, 26)),
+    endDate: new Date(Date.UTC(year, month - 1, 25)),
+  };
+}
+
+async function assertNoPeriodOverlap(
+  startDate: Date,
+  endDate: Date,
+  excludeId?: number,
+  client: PayrollDbClient = prisma,
+): Promise<void> {
+  const overlapping = await client.payrollPeriod.findFirst({
+    where: {
+      ...(excludeId === undefined ? {} : { id: { not: excludeId } }),
+      startDate: { lte: endDate },
+      endDate: { gte: startDate },
+    },
+    select: { id: true },
+  });
+  if (overlapping) {
+    throw new HttpError(409, 'Payroll period dates overlap an existing period');
+  }
+}
+
+function isPeriodConstraintConflict(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    (error.code === 'P2002' || error.code === 'P2004')
+  );
+}
+
 export async function listPeriods(): Promise<PeriodSummary[]> {
   const periods = await prisma.payrollPeriod.findMany({
     orderBy: [{ year: 'desc' }, { month: 'desc' }],
@@ -67,7 +112,8 @@ export async function listPeriods(): Promise<PeriodSummary[]> {
   return periods.map(serializePeriod);
 }
 
-export async function createPeriod(year: number, month: number): Promise<PeriodSummary> {
+export async function createPeriod(input: CreatePeriodInput): Promise<PeriodSummary> {
+  const { year, month } = input;
   const existing = await prisma.payrollPeriod.findUnique({
     where: { year_month: { year, month } },
   });
@@ -78,61 +124,99 @@ export async function createPeriod(year: number, month: number): Promise<PeriodS
   const liveRate = await fetchUsdToIdrRate();
   const exchangeRate = liveRate ?? FALLBACK_RATE;
   const rateSource = liveRate ? 'API' : 'FALLBACK';
+  const range =
+    input.startDate && input.endDate
+      ? { startDate: input.startDate, endDate: input.endDate }
+      : defaultPeriodRange(year, month);
 
-  const created = await prisma.payrollPeriod.create({
-    data: { year, month, exchangeRate, rateSource, status: 'DRAFT' },
-    include: { _count: { select: { payslips: true } } },
-  });
-  return serializePeriod(created);
+  await assertNoPeriodOverlap(range.startDate, range.endDate);
+
+  try {
+    const created = await prisma.payrollPeriod.create({
+      data: { year, month, ...range, exchangeRate, rateSource, status: 'DRAFT' },
+      include: { _count: { select: { payslips: true } } },
+    });
+    return serializePeriod(created);
+  } catch (error) {
+    if (isPeriodConstraintConflict(error)) {
+      throw new HttpError(409, 'Payroll period conflicts with an existing period');
+    }
+    throw error;
+  }
 }
 
-export async function patchRate(id: number, exchangeRate: number): Promise<PeriodSummary> {
-  const period = await prisma.payrollPeriod.findUnique({ where: { id } });
-  if (!period) {
-    throw new HttpError(404, 'Payroll period not found');
+export async function patchPeriod(id: number, input: PatchPeriodInput): Promise<PeriodSummary> {
+  try {
+    return await prisma.$transaction(async (tx) => {
+      // Serialize edits with finalization. Without this row lock, both operations can observe
+      // DRAFT and a late PATCH can change the range after payslips have been snapshotted.
+      await tx.$queryRaw`SELECT id FROM "PayrollPeriod" WHERE id = ${id} FOR UPDATE`;
+      const period = await tx.payrollPeriod.findUnique({ where: { id } });
+      if (!period) {
+        throw new HttpError(404, 'Payroll period not found');
+      }
+      if (period.status !== 'DRAFT') {
+        throw new HttpError(409, 'Only draft periods can be edited');
+      }
+
+      const data: Prisma.PayrollPeriodUpdateInput = {};
+      if (input.exchangeRate !== undefined) {
+        data.exchangeRate = input.exchangeRate;
+        data.rateSource = 'MANUAL';
+      }
+      if (input.startDate && input.endDate) {
+        await assertNoPeriodOverlap(input.startDate, input.endDate, id, tx);
+        data.startDate = input.startDate;
+        data.endDate = input.endDate;
+      }
+
+      const updated = await tx.payrollPeriod.update({
+        where: { id },
+        data,
+        include: { _count: { select: { payslips: true } } },
+      });
+      return serializePeriod(updated);
+    });
+  } catch (error) {
+    if (isPeriodConstraintConflict(error)) {
+      throw new HttpError(409, 'Payroll period conflicts with an existing period');
+    }
+    throw error;
   }
-  if (period.status !== 'DRAFT') {
-    throw new HttpError(409, 'Only draft periods can have their exchange rate edited');
-  }
-  const updated = await prisma.payrollPeriod.update({
-    where: { id },
-    data: { exchangeRate, rateSource: 'MANUAL' },
-    include: { _count: { select: { payslips: true } } },
-  });
-  return serializePeriod(updated);
 }
 
 export async function deletePeriod(id: number): Promise<void> {
-  const period = await prisma.payrollPeriod.findUnique({ where: { id } });
-  if (!period) {
-    throw new HttpError(404, 'Payroll period not found');
-  }
-  if (period.status !== 'DRAFT') {
-    throw new HttpError(409, 'Finalized periods cannot be deleted');
-  }
-  await prisma.payrollPeriod.delete({ where: { id } });
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "PayrollPeriod" WHERE id = ${id} FOR UPDATE`;
+    const period = await tx.payrollPeriod.findUnique({ where: { id } });
+    if (!period) {
+      throw new HttpError(404, 'Payroll period not found');
+    }
+    if (period.status !== 'DRAFT') {
+      throw new HttpError(409, 'Finalized periods cannot be deleted');
+    }
+    await tx.payrollPeriod.delete({ where: { id } });
+  });
 }
 
-// Gathers every source record touching the period month and computes a live preview row
+// Gathers every source record touching the stored date range and computes a live preview row
 // per active employee. Kept DB-side; the arithmetic lives in the pure payroll lib.
 async function computeRows(
   exchangeRate: number,
-  year: number,
-  month: number,
+  periodStart: Date,
+  periodEnd: Date,
+  client: PayrollDbClient = prisma,
 ): Promise<PayslipRow[]> {
-  const monthStart = new Date(Date.UTC(year, month - 1, 1));
-  const monthEnd = new Date(Date.UTC(year, month, 0));
-
   const [employees, overtimes, dailyLogs, reimbursements, leaves, holidays] = await Promise.all([
-    // Anyone whose employment overlaps the month, not merely anyone currently employed.
-    // Someone terminated on the 12th still earns twelve days of this month, and the old
+    // Anyone whose employment overlaps the range, not merely anyone currently employed.
+    // Someone terminated during the range still earns the days they covered, and the old
     // isActive filter had no way to say that — it erased them from the month entirely.
-    prisma.employee.findMany({
+    client.employee.findMany({
       where: {
         employments: {
           some: {
-            startDate: { lte: monthEnd },
-            OR: [{ endDate: null }, { endDate: { gte: monthStart } }],
+            startDate: { lte: periodEnd },
+            OR: [{ endDate: null }, { endDate: { gte: periodStart } }],
           },
         },
       },
@@ -146,38 +230,38 @@ async function computeRows(
         hourlyRate: true,
         employments: {
           where: {
-            startDate: { lte: monthEnd },
-            OR: [{ endDate: null }, { endDate: { gte: monthStart } }],
+            startDate: { lte: periodEnd },
+            OR: [{ endDate: null }, { endDate: { gte: periodStart } }],
           },
           select: { startDate: true, endDate: true },
         },
       },
     }),
-    prisma.overtime.findMany({
-      where: { status: 'APPROVED', date: { gte: monthStart, lte: monthEnd } },
+    client.overtime.findMany({
+      where: { status: 'APPROVED', date: { gte: periodStart, lte: periodEnd } },
       select: { id: true, employeeId: true, date: true, hours: true, status: true },
     }),
-    prisma.dailyLog.findMany({
-      where: { date: { gte: monthStart, lte: monthEnd } },
+    client.dailyLog.findMany({
+      where: { date: { gte: periodStart, lte: periodEnd } },
       select: { id: true, employeeId: true, date: true, hours: true },
     }),
-    prisma.reimbursement.findMany({
-      where: { status: 'APPROVED', date: { gte: monthStart, lte: monthEnd } },
+    client.reimbursement.findMany({
+      where: { status: 'APPROVED', date: { gte: periodStart, lte: periodEnd } },
       select: { id: true, employeeId: true, date: true, amount: true, status: true },
     }),
     // Leave can span months; include any record overlapping it. computePayslipRow clips each to
     // the in-period working days. Every type is fetched, not just the deducting ones: PAID
     // leave deducts nothing but is still a day absent in the attendance summary.
-    prisma.leaveRequest.findMany({
+    client.leaveRequest.findMany({
       where: {
-        startDate: { lte: monthEnd },
-        endDate: { gte: monthStart },
+        startDate: { lte: periodEnd },
+        endDate: { gte: periodStart },
       },
       select: { id: true, employeeId: true, type: true, startDate: true, endDate: true },
     }),
     // `type` is selected because it decides whether the day is worked — joint leave is.
-    prisma.holiday.findMany({
-      where: { date: { gte: monthStart, lte: monthEnd } },
+    client.holiday.findMany({
+      where: { date: { gte: periodStart, lte: periodEnd } },
       select: { date: true, type: true },
     }),
   ]);
@@ -228,8 +312,8 @@ async function computeRows(
       holidays,
       employments: employee.employments,
       exchangeRate,
-      year,
-      month,
+      periodStart,
+      periodEnd,
     };
     return computePayslipRow(payrollEmployee, ctx);
   });
@@ -293,27 +377,35 @@ export async function getPeriodPreview(id: number) {
     });
     rows = payslips.map(rowFromPayslip);
   } else {
-    rows = await computeRows(Number(period.exchangeRate), period.year, period.month);
+    rows = await computeRows(Number(period.exchangeRate), period.startDate, period.endDate);
   }
 
   return { period: serializePeriod(period), rows, totals: totalsOf(rows) };
 }
 
 export async function finalizePeriod(id: number, finalizerUserId: number) {
-  const period = await prisma.payrollPeriod.findUnique({ where: { id } });
-  if (!period) {
-    throw new HttpError(404, 'Payroll period not found');
-  }
-  if (period.status !== 'DRAFT') {
-    throw new HttpError(409, 'Only draft periods can be finalized');
-  }
-
-  const exchangeRate = Number(period.exchangeRate);
-  const rows = await computeRows(exchangeRate, period.year, period.month);
-
-  // One transaction: snapshot every payslip, notify its owner, then flip the period to
-  // FINALIZED (locks the month).
   await prisma.$transaction(async (tx) => {
+    // The same row lock is taken by PATCH and DELETE. This freezes the exact range and rate
+    // before source rows are gathered, so the stored period, payslips and exports cannot diverge.
+    await tx.$queryRaw`SELECT id FROM "PayrollPeriod" WHERE id = ${id} FOR UPDATE`;
+    const period = await tx.payrollPeriod.findUnique({ where: { id } });
+    if (!period) {
+      throw new HttpError(404, 'Payroll period not found');
+    }
+    if (period.status !== 'DRAFT') {
+      throw new HttpError(409, 'Only draft periods can be finalized');
+    }
+
+    const rows = await computeRows(
+      Number(period.exchangeRate),
+      period.startDate,
+      period.endDate,
+      tx,
+    );
+
+    // One transaction: snapshot every payslip, notify its owner, then flip the period to
+    // FINALIZED. Source mutations lock overlapping period rows in shared mode, so they cannot
+    // commit between this snapshot and the status transition.
     const targets: EmployeeTarget[] = [];
     for (const row of rows) {
       const payslip = await tx.payslip.create({
@@ -410,6 +502,8 @@ export async function exportPeriodPdf(id: number): Promise<ExportDocument> {
   const body = await renderPayrollSheet({
     year: period.year,
     month: period.month,
+    startDate: isoDate(period.startDate),
+    endDate: isoDate(period.endDate),
     status: period.status,
     exchangeRate: Number(period.exchangeRate),
     rateSource: period.rateSource,
