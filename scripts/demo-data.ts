@@ -374,8 +374,10 @@ async function main() {
   console.log(`  leave ${created.leave} · overtime ${created.overtime} · daily logs ${created.dailyLogs} · ` +
     `reimbursements ${created.reimbursements} · holidays ${created.holidays} · periods ${created.periods}`);
   console.log(`  HR unread notifications: ${unread.count}`);
-  const rows = preview?.payslips ?? preview?.lines ?? preview?.employees ?? [];
-  console.log(`  July draft preview: ${Array.isArray(rows) ? rows.length : '?'} employees, status ${preview?.status}`);
+  const rows = preview?.rows ?? [];
+  console.log(
+    `  July draft preview: ${rows.length} employees, status ${preview?.period?.status}`,
+  );
   console.log('\nDone.\n');
 }
 
