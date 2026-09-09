@@ -94,14 +94,21 @@ and it only configures the *development proxy*. There is no API-URL variable, be
 built app calls relative `/api` paths. That is what allows one origin to serve both halves
 in production, which in turn is why production needs no CORS configuration at all.
 
-**Production only** (`.env.docker.example` → `docker-compose.prod.yml`):
+**Production only** (`.env.docker.example` → `docker-compose.demo.yml` /
+`docker-compose.live.yml`). There are two deployments and each has its own `.env` — see §6:
 
 | Variable | Required | Notes |
 | --- | --- | --- |
 | `POSTGRES_USER` | **Yes** | Interpolated into `DATABASE_URL`; unset produces a malformed URL |
 | `POSTGRES_PASSWORD` | **Yes** | `openssl rand -hex 32` |
 | `POSTGRES_DB` | **Yes** | |
-| `SEED_ON_START` | No (default `true`) | Seeds **only if the `User` table is empty** — see §7 |
+| `JWT_SECRET` | **Yes** | **Must differ between the two instances** — see §6 |
+| `SEED_ON_START` | Demo only (default `true`) | Seeds **only if the `User` table is empty** — see §7. The live compose file hard-codes `false` rather than reading this |
+| `BOOTSTRAP_HR_EMAIL` | Live only | The first HR login |
+| `BOOTSTRAP_HR_PASSWORD` | Live only | Delete from `.env` once HR has changed it |
+
+`DEMO_MODE` and `BOOTSTRAP_ON_START` are **not** in `.env`. They are fixed in each compose
+file, so no edit to a `.env` can put the demo login widgets in front of real salary data.
 
 Never commit a real `.env`. On the server it is created once by hand and CI never
 overwrites it.
@@ -135,11 +142,27 @@ the entrypoint passes `--schema` explicitly.
 
 ### The entrypoint
 
-On every container start: `prisma migrate deploy` runs unconditionally. Then, if
-`SEED_ON_START=true`, it probes whether the database is empty and seeds only if it is. The
-probe is three-way on purpose — empty → seed, populated → skip, **check failed → abort the
-container**. Neither wrong guess is acceptable: assuming "populated" would leave a fresh
-database unseeded, and assuming "empty" would wipe a live one.
+On every container start: `prisma migrate deploy` runs unconditionally. Then two optional
+blocks, each gated on the same three-way emptiness probe — empty → run, populated → skip,
+**check failed → abort the container**. Neither wrong guess is acceptable: assuming
+"populated" would leave a fresh database unseeded, and assuming "empty" would wipe a live one.
+
+| Flag | Runs | On an empty database |
+| --- | --- | --- |
+| `SEED_ON_START=true` | `dist/prisma/seed.js` | Wipes all 11 tables, then writes the full demo dataset |
+| `BOOTSTRAP_ON_START=true` | `dist/prisma/bootstrap.js` | Upserts the `HR` and `EMPLOYEE` roles and creates one HR user — no employee profile, bcrypt cost 10 |
+
+The bootstrap block exists because `seed.ts` is the only other code that creates the two
+`Role` rows. Without it, a live instance with `SEED_ON_START=false` comes up with no roles,
+no users, and no way to log in.
+
+`prisma/bootstrap.ts` **never imports `seed.ts` and contains no delete of any kind.** Keep
+it that way: on the live instance it runs against real payroll on every restart, and the
+only thing separating that data from `seed.ts`'s opening `deleteMany()` is which script the
+entrypoint picks. It is idempotent, and it does nothing to users once any user exists.
+
+Seed runs before bootstrap, so if both flags are true the seed wins and bootstrap then sees
+a populated database and skips.
 
 ### How the web app is served in production
 
@@ -169,9 +192,26 @@ read seeded rows.
 
 Gated on `test` passing plus `github.ref == 'refs/heads/main'`, so pull requests get the
 full test gate with zero production contact. It checks free memory on the server and
-**aborts if under 150 MB**, builds the image on the runner for `linux/amd64`, streams it
-over SSH, copies the compose file, brings the stack up, and polls both the container
-healthcheck and the public URL before declaring success.
+**aborts if under 150 MB**, builds the image on the runner for `linux/amd64`, retags the
+image already on the server as `hrms-app:previous`, streams the new one over SSH, copies
+**both** compose files, brings both stacks up, and polls each container's healthcheck and
+each public URL before declaring success.
+
+The image is built and shipped **once**. Both compose files reference `hrms-app:deploy`, so
+a single `docker load` feeds two `docker compose up -d` invocations.
+
+**The `DEPLOY_DEMO` freeze switch.** The demo steps — `up -d`, wait-for-healthy, and the
+public health check — are all guarded by `if: vars.DEPLOY_DEMO != 'false'`. Set the
+repository variable to `false` and the demo container keeps running the image it already
+has, untouched, while the live instance still deploys:
+
+```bash
+gh variable set DEPLOY_DEMO --body false   # freeze the demo (defence week)
+gh variable delete DEPLOY_DEMO             # back to deploying both
+```
+
+Its database and uploads volumes are untouched either way. This is a switch, not a branch:
+no code diverges, and the frozen demo is still the same commit as live.
 
 Three repository secrets are required:
 
@@ -185,15 +225,74 @@ gh secret set VPS_USER --body <server-user>
 
 ## 6. Production deployment
 
-Manual equivalent of the deploy job: `./deploy/deploy.sh` from the repo root (add
-`--skip-build` to reuse the last image).
+### Two instances, one image
+
+The same image runs twice on the server. Everything that makes one of them a "demo" is
+environment, never code — there is no `demo` branch, and the system shown at the defence is
+the same commit that runs Aisahub's payroll.
+
+| | Demo (thesis) | Live (Aisahub) |
+| --- | --- | --- |
+| Host | `hrms.muhammadfaza.com` | `hr.muhammadfaza.com` |
+| Server directory | `~/hrms/` | `~/hrms-live/` |
+| Compose file | `docker-compose.demo.yml` | `docker-compose.live.yml` |
+| Containers | `hrms-app`, `hrms-db` | `hrms-live-app`, `hrms-live-db` |
+| Network | `hrms-internal` | `hrms-live-internal` |
+| Volumes | `hrms-db-data`, `hrms-uploads` | `hrms-live-db-data`, `hrms-live-uploads` |
+| `DEMO_MODE` | `true` | `false` |
+| `SEED_ON_START` | `true` | `false`, hard-coded in the compose file |
+| `BOOTSTRAP_ON_START` | `false` | `true` |
+| Data | demo dataset | real payroll |
+| Backups | none | nightly `pg_dump`, 14 retained |
+
+`hr.muhammadfaza.com` needs no DNS work: the wildcard `*.muhammadfaza.com` record already
+points at the box and Traefik routes purely from container labels.
+
+Separate Postgres containers rather than two databases in one, at a cost of roughly
+10–15 MiB. In exchange, no connection string, script or mistake on the demo side can reach
+live payroll data.
+
+**`DEMO_MODE` is read at runtime, not baked at build.** One image serves both instances, so
+a Vite build-time flag cannot work. The public `GET /api/v1/config` returns
+`{ "demoMode": boolean }` and the login page hides the click-to-login account list — and the
+shared password printed beside it — when it is false. The endpoint is unauthenticated by
+necessity (it is read before login) and exposes exactly that one boolean.
+
+### The two instances MUST NOT share a `JWT_SECRET`
+
+`middleware/auth.ts` takes only `userId` from the token and re-reads the role from the
+database. With a shared secret, a token minted by the demo's `hr@aisahub.com` — whose
+password is printed on the demo login page for anyone to read — is a structurally valid
+token for the same user ID on the live instance, which is the real HR account.
+
+That is a full authentication bypass into real salary data, reachable by anyone who opens
+the demo login screen. Generate the two secrets independently; never copy `~/hrms/.env` to
+`~/hrms-live/.env` and edit it.
+
+### First boot of the live instance
+
+`~/hrms-live/.env` needs `BOOTSTRAP_HR_EMAIL` and `BOOTSTRAP_HR_PASSWORD`. On an empty
+database the entrypoint creates the two roles and that one HR account (see §4). HR then
+changes the password through the in-app flow, after which `BOOTSTRAP_HR_PASSWORD` is
+deleted from the `.env`. There is no forced-change screen — that would be new code for a
+one-time event.
+
+### Running a deploy by hand
+
+Manual equivalent of the deploy job — one instance per run:
+
+```bash
+./deploy/deploy.sh                   # demo  → ~/hrms/,      hrms.muhammadfaza.com
+INSTANCE=live ./deploy/deploy.sh     # live  → ~/hrms-live/, hr.muhammadfaza.com
+./deploy/deploy.sh --skip-build      # reuse the image already built locally
+```
 
 The governing constraint is that **the server has 1 GB of RAM and a history of the kernel
 killing processes for using too much.** Two rules follow:
 
 1. **Never build on the server.** Images are built on a laptop or a CI runner and streamed
    in via `docker save | gzip | ssh … docker load`. There is no registry, so there are no
-   registry credentials to manage. `docker-compose.prod.yml` has no `build:` key by design.
+   registry credentials to manage. Neither compose file has a `build:` key, by design.
 2. **Every service declares a memory limit**, and both deploy paths refuse to start if the
    server has under 150 MB free — other services share that box.
 
@@ -205,20 +304,42 @@ it is unreachable from the internet. To get a psql prompt you go through the con
 
 ### Rollback
 
-Manual, and **you must prepare it before you deploy**:
+Both deploy paths now tag the outgoing image `hrms-app:previous` before loading the new one,
+so a rollback is a retag — no rebuild, and nothing to prepare by hand:
 
 ```bash
-# BEFORE deploying — tag the currently-running image
-docker tag hrms-app:deploy hrms-app:previous
-
-# to roll back
-docker tag hrms-app:previous hrms-app:deploy && cd ~/hrms && docker compose up -d
+docker tag hrms-app:previous hrms-app:deploy
+cd ~/hrms-live && docker compose up -d     # or ~/hrms for the demo
 ```
 
-CI does not do this, so **an automated deploy leaves no rollback point.** It also rolls back
-*code only* — a migration applied by the newer image stays applied, and Prisma has no
-down-migrations. There are no automated database backups; take a `pg_dump` before any
-release that carries a migration.
+Both instances share the `hrms-app:deploy` tag, so a retag rolls back **both** the next time
+each is brought up. Bring up only the one you meant to move.
+
+It rolls back *code only* — a migration applied by the newer image stays applied, and Prisma
+has no down-migrations. Take a `pg_dump` before any release that carries a migration; on the
+live instance the nightly backup below covers the previous night, not the last hour.
+
+### Backups (live instance only)
+
+`~/hrms-live/backup.sh`, run nightly at 03:00 Asia/Jakarta by cron. Confirm the host clock
+with `timedatectl` before writing the schedule — cron uses the host timezone and this box
+has been assumed UTC elsewhere.
+
+```sh
+docker exec hrms-live-db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
+  | gzip > ~/hrms-backups/hrms-live-$(date +%F).sql.gz
+find ~/hrms-backups -name 'hrms-live-*.sql.gz' -mtime +14 -delete
+```
+
+`pg_dump` runs inside the container, so nothing new is installed on the box. Disk is not a
+constraint.
+
+**Restore the first dump into a throwaway database once, before real data goes in.** An
+untested backup is not a backup.
+
+The demo instance has no backups and needs none: `pnpm prisma:seed` and
+`scripts/demo-data.ts` rebuild it. Backups stay on the same box — that covers a bad
+migration or a mistaken delete, not losing the VPS, which is a knowing trade.
 
 ---
 
