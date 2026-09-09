@@ -32,7 +32,6 @@ services:
       DEMO_MODE: "true"
       # Seeds demo data only when the database is empty (see docker-entrypoint.sh).
       SEED_ON_START: ${SEED_ON_START:-true}
-      OWNER_EMAIL: ${OWNER_EMAIL:-owner@aisahub.com}
     volumes:
       - hrms-uploads:/app/uploads
     networks:
