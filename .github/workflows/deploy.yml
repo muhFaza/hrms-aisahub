@@ -88,7 +88,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: production
-      url: https://hrms.muhammadfaza.com
+      url: https://hr.muhammadfaza.com
 
     steps:
       - uses: actions/checkout@v7
@@ -138,26 +138,62 @@ jobs:
           echo "::error::docker build failed after 3 attempts"
           exit 1
 
+      # Keep the outgoing image so a rollback is a retag rather than a rebuild.
+      # One of the two instances now holds real payroll; `docker tag
+      # hrms-app:previous hrms-app:deploy && docker compose up -d` is the fastest
+      # way back. Nothing on a first-ever deploy, hence the `|| true`.
+      - name: Tag the outgoing image as :previous
+        run: |
+          ssh vps 'docker image inspect hrms-app:deploy >/dev/null 2>&1 && docker tag hrms-app:deploy hrms-app:previous || true'
+
       - name: Ship image to VPS
         run: |
           docker image inspect hrms-app:deploy --format '{{.Size}}' \
             | awk '{printf "shipping ~%.0fMB uncompressed\n", $1/1024/1024}'
           docker save hrms-app:deploy | gzip -1 | ssh vps 'gunzip | docker load'
 
-      - name: Sync compose file
+      # One image, two compose files. Both reference hrms-app:deploy, so the single
+      # `docker load` above feeds both instances.
+      - name: Sync compose files
         run: |
-          ssh vps 'mkdir -p ~/hrms'
-          scp docker-compose.prod.yml vps:hrms/docker-compose.yml
-          # .env is created once by hand and never overwritten from CI.
+          ssh vps 'mkdir -p ~/hrms ~/hrms-live'
+          scp docker-compose.demo.yml vps:hrms/docker-compose.yml
+          scp docker-compose.live.yml vps:hrms-live/docker-compose.yml
+          # .env is created once by hand per directory and never overwritten from CI.
           ssh vps 'test -f ~/hrms/.env' || {
             echo "::error::~/hrms/.env missing on the VPS. Create it from .env.docker.example."
             exit 1
           }
+          ssh vps 'test -f ~/hrms-live/.env' || {
+            echo "::error::~/hrms-live/.env missing on the VPS. Create it from .env.docker.example — and give it a JWT_SECRET different from the demo's."
+            exit 1
+          }
 
-      - name: Start containers
+      - name: Start live containers
+        run: ssh vps 'cd ~/hrms-live && docker compose up -d'
+
+      # Freeze switch for defence week: set the repository variable DEPLOY_DEMO to
+      # 'false' and the demo container keeps running whatever image it already has,
+      # with its database and uploads volume untouched. The live instance still
+      # deploys. This is a switch, not a branch — no code diverges.
+      - name: Start demo containers
+        if: vars.DEPLOY_DEMO != 'false'
         run: ssh vps 'cd ~/hrms && docker compose up -d'
 
-      - name: Wait for healthy
+      - name: Wait for live healthy
+        run: |
+          for i in $(seq 1 30); do
+            STATUS=$(ssh vps "docker inspect --format '{{.State.Health.Status}}' hrms-live-app 2>/dev/null || echo missing")
+            [ "$STATUS" = "healthy" ] && { echo "healthy"; exit 0; }
+            echo "  [$i/30] $STATUS"
+            sleep 5
+          done
+          echo "::error::hrms-live-app did not become healthy"
+          ssh vps 'cd ~/hrms-live && docker compose logs --tail 40 hrms-live-app'
+          exit 1
+
+      - name: Wait for demo healthy
+        if: vars.DEPLOY_DEMO != 'false'
         run: |
           for i in $(seq 1 30); do
             STATUS=$(ssh vps "docker inspect --format '{{.State.Health.Status}}' hrms-app 2>/dev/null || echo missing")
@@ -169,7 +205,19 @@ jobs:
           ssh vps 'cd ~/hrms && docker compose logs --tail 40 hrms-app'
           exit 1
 
-      - name: Verify public endpoint
+      - name: Verify live public endpoint
+        run: |
+          for i in $(seq 1 12); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' https://hr.muhammadfaza.com/api/v1/health) || CODE=000
+            [ "$CODE" = "200" ] && { echo "OK: 200"; exit 0; }
+            echo "  [$i/12] -> $CODE"
+            sleep 10
+          done
+          echo "::error::https://hr.muhammadfaza.com/api/v1/health never returned 200"
+          exit 1
+
+      - name: Verify demo public endpoint
+        if: vars.DEPLOY_DEMO != 'false'
         run: |
           for i in $(seq 1 12); do
             CODE=$(curl -s -o /dev/null -w '%{http_code}' https://hrms.muhammadfaza.com/api/v1/health) || CODE=000
@@ -184,7 +232,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "### Deploy to https://hrms.muhammadfaza.com"
+            echo "### Deploy: https://hr.muhammadfaza.com (live) + https://hrms.muhammadfaza.com (demo)"
             echo
             echo '```'
             ssh vps 'free -m; docker stats --no-stream --format "{{.Name}}  {{.MemUsage}}" | grep hrms' || true

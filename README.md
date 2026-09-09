@@ -56,7 +56,8 @@ HRMS-Thesis/
 │   └── src/{api,pages,layouts,components,lib}
 ├── Dockerfile              # multi-stage build; one image serves API + built SPA
 ├── docker-compose.yml      # local dev stack (db :5433, API :5001, client :5173)
-├── docker-compose.prod.yml # VPS stack behind Traefik
+├── docker-compose.demo.yml # VPS demo stack behind Traefik (hrms.muhammadfaza.com)
+├── docker-compose.live.yml # VPS live stack behind Traefik (hr.muhammadfaza.com)
 ├── docker-entrypoint.sh    # prod container: migrate, seed-if-empty, start
 ├── docker-dev-server.sh    # dev container: install, migrate, seed-if-empty, watch
 └── deploy/                 # deploy.sh + deployment runbook
