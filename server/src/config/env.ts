@@ -23,4 +23,14 @@ export const env = {
   clientDist: process.env.CLIENT_DIST ?? path.resolve(process.cwd(), 'client-dist'),
   // Overridable so the container can point at a mounted volume instead of cwd.
   uploadDir: process.env.UPLOAD_DIR ?? path.resolve(process.cwd(), 'uploads'),
+  // Demo instance flag, surfaced to the client by GET /api/v1/config.
+  //
+  // A getter, not a captured value: one image serves both the demo and the live
+  // instance, so this can only ever be a runtime read. Anything baked at import
+  // (or at build) would be wrong for one of the two. Exactly "true" enables it —
+  // a typo leaves the demo widgets hidden, which is the safe direction on an
+  // instance holding real salaries.
+  get demoMode(): boolean {
+    return process.env.DEMO_MODE === 'true';
+  },
 };
