@@ -6,17 +6,32 @@
 # image is built here, streamed over SSH, and loaded into the remote Docker.
 # Same pattern as veydar and square-menu-explorer.
 #
-#   ./deploy/deploy.sh                 # build + ship + restart
-#   ./deploy/deploy.sh --skip-build    # re-ship the image already built locally
+# There are two instances off this one image. INSTANCE picks which one this run
+# touches; the other is left alone.
+#
+#   demo -> ~/hrms/      hrms.muhammadfaza.com  (thesis, seeded)
+#   live -> ~/hrms-live/ hr.muhammadfaza.com    (Aisahub's real payroll)
+#
+#   ./deploy/deploy.sh                    # build + ship + restart the DEMO
+#   INSTANCE=live ./deploy/deploy.sh      # ...the LIVE instance
+#   ./deploy/deploy.sh --skip-build       # re-ship the image already built locally
 #   SSH_KEY=~/other.pem ./deploy/deploy.sh
 #
 set -euo pipefail
 
+INSTANCE="${INSTANCE:-demo}"
+case "$INSTANCE" in
+  demo) DEFAULT_DIR=/home/fazadev/hrms;      DEFAULT_DOMAIN=hrms.muhammadfaza.com; CONTAINER=hrms-app ;;
+  live) DEFAULT_DIR=/home/fazadev/hrms-live; DEFAULT_DOMAIN=hr.muhammadfaza.com;   CONTAINER=hrms-live-app ;;
+  *) echo "ERROR: INSTANCE must be 'demo' or 'live', got '$INSTANCE'" >&2; exit 1 ;;
+esac
+
 IMAGE="${IMAGE:-hrms-app:deploy}"
 SSH_HOST="${SSH_HOST:-fazadev@202.74.75.193}"
 SSH_KEY="${SSH_KEY:-$HOME/repos/personal/ssh1.pem}"
-REMOTE_DIR="${REMOTE_DIR:-/home/fazadev/hrms}"
-DOMAIN="${DOMAIN:-hrms.muhammadfaza.com}"
+COMPOSE_FILE="docker-compose.$INSTANCE.yml"
+REMOTE_DIR="${REMOTE_DIR:-$DEFAULT_DIR}"
+DOMAIN="${DOMAIN:-$DEFAULT_DOMAIN}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SSH="ssh -i $SSH_KEY -o BatchMode=yes"
@@ -47,14 +62,20 @@ else
 fi
 
 # --- ship -----------------------------------------------------------------
+# Keep the outgoing image so a rollback is a retag, not a rebuild. The live
+# instance holds real payroll; `docker tag hrms-app:previous hrms-app:deploy &&
+# docker compose up -d` is the fastest way back.
+log "Tagging the image currently on the VPS as :previous"
+$SSH "$SSH_HOST" "docker image inspect $IMAGE >/dev/null 2>&1 && docker tag $IMAGE hrms-app:previous || true"
+
 SIZE=$(docker image inspect "$IMAGE" --format '{{.Size}}' | awk '{printf "%.0f", $1/1024/1024}')
 log "Shipping $IMAGE (~${SIZE}MB uncompressed) over SSH"
 docker save "$IMAGE" | gzip -1 | $SSH "$SSH_HOST" 'gunzip | docker load'
 
 # --- remote files ---------------------------------------------------------
-log "Syncing compose file to $REMOTE_DIR"
+log "Syncing $COMPOSE_FILE to $REMOTE_DIR"
 $SSH "$SSH_HOST" "mkdir -p $REMOTE_DIR"
-scp -i "$SSH_KEY" "$REPO_ROOT/docker-compose.prod.yml" "$SSH_HOST:$REMOTE_DIR/docker-compose.yml"
+scp -i "$SSH_KEY" "$REPO_ROOT/$COMPOSE_FILE" "$SSH_HOST:$REMOTE_DIR/docker-compose.yml"
 
 $SSH "$SSH_HOST" "test -f $REMOTE_DIR/.env" || die \
   "$REMOTE_DIR/.env missing on the VPS. Create it from .env.docker.example first:
@@ -65,16 +86,16 @@ $SSH "$SSH_HOST" "test -f $REMOTE_DIR/.env" || die \
 log "Starting containers"
 $SSH "$SSH_HOST" "cd $REMOTE_DIR && docker compose up -d"
 
-log "Waiting for the app to become healthy (first boot migrates and seeds)"
+log "Waiting for $CONTAINER to become healthy (first boot migrates, then seeds or bootstraps)"
 for i in $(seq 1 30); do
-  STATUS=$($SSH "$SSH_HOST" "docker inspect --format '{{.State.Health.Status}}' hrms-app 2>/dev/null || echo missing")
+  STATUS=$($SSH "$SSH_HOST" "docker inspect --format '{{.State.Health.Status}}' $CONTAINER 2>/dev/null || echo missing")
   [ "$STATUS" = "healthy" ] && break
   printf '  [%02d/30] %s\n' "$i" "$STATUS"
   sleep 5
 done
 [ "${STATUS:-}" = "healthy" ] || {
-  $SSH "$SSH_HOST" "cd $REMOTE_DIR && docker compose logs --tail 40 hrms-app"
-  die "hrms-app did not become healthy (last status: ${STATUS:-unknown})"
+  $SSH "$SSH_HOST" "cd $REMOTE_DIR && docker compose logs --tail 40 $CONTAINER"
+  die "$CONTAINER did not become healthy (last status: ${STATUS:-unknown})"
 }
 
 # --- verify ---------------------------------------------------------------

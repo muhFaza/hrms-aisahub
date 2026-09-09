@@ -1,4 +1,5 @@
-# LOCAL DEVELOPMENT stack. For the VPS, see docker-compose.prod.yml.
+# LOCAL DEVELOPMENT stack. For the VPS, see docker-compose.demo.yml and
+# docker-compose.live.yml.
 #
 #   docker compose up          # db + API (tsx watch) + client (vite), hot reload
 #   docker compose down        # stop; add -v to also drop the database volume

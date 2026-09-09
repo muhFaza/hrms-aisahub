@@ -1,0 +1,120 @@
+# LIVE stack for the VPS (202.74.75.193), deployed to ~/hrms-live/ as
+# hr.muhammadfaza.com. This one runs Aisahub's real payroll.
+#
+# Same image as the demo (docker-compose.demo.yml, ~/hrms/,
+# hrms.muhammadfaza.com) — the difference is entirely environment and names.
+# Separate containers, separate network, separate volumes, separate Postgres, so
+# no connection string or script on the demo side can reach this data.
+#
+#   docker compose -f docker-compose.live.yml up -d
+#
+# ⚠️ JWT_SECRET in ~/hrms-live/.env MUST differ from the demo's. auth.ts trusts
+# only the userId in the token and re-reads the role from the database, so a
+# shared secret makes a token minted by the demo's hr@aisahub.com — whose
+# password is printed on the demo login page — a valid token for the same user
+# ID here. That is a full authentication bypass into real salaries. Generate the
+# two secrets independently.
+#
+# ⚠️ SEED_ON_START is hard-coded false, not read from .env. seed.ts opens with
+# deleteMany() across all 11 tables; there must be no variable on this box that
+# can turn it on by accident.
+#
+# Traefik terminates TLS and reaches hrms-live-app over the shared `web` network.
+# Postgres sits on hrms-live-internal only: no published ports, unreachable publicly.
+
+services:
+  hrms-live-app:
+    image: hrms-app:deploy
+    container_name: hrms-live-app
+    restart: unless-stopped
+    # 1GB box: cap every service. See ~/CLAUDE.md hard constraint #1.
+    mem_limit: 192m
+    memswap_limit: 384m
+    depends_on:
+      hrms-live-db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@hrms-live-db:5432/${POSTGRES_DB}?schema=public
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-12h}
+      # No demo account list on the login page. See the note in the header: this
+      # widget prints a shared password on screen and must never appear here.
+      DEMO_MODE: "false"
+      # Hard-coded, deliberately not ${SEED_ON_START}. See the header.
+      SEED_ON_START: "false"
+      # Creates the HR and EMPLOYEE roles and the first HR account when the
+      # database is empty (docker-entrypoint.sh -> dist/prisma/bootstrap.js).
+      # Nothing else does on this instance, so without it nobody can log in.
+      BOOTSTRAP_ON_START: "true"
+      BOOTSTRAP_HR_EMAIL: ${BOOTSTRAP_HR_EMAIL}
+      # Remove from ~/hrms-live/.env once the HR account has changed its password.
+      BOOTSTRAP_HR_PASSWORD: ${BOOTSTRAP_HR_PASSWORD}
+    volumes:
+      - hrms-live-uploads:/app/uploads
+    networks:
+      - web
+      - hrms-live-internal
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('node:http').get('http://127.0.0.1:5000/api/v1/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Generous: the first boot runs migrations and bootstraps before listening.
+      start_period: 90s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=web
+      - traefik.http.routers.hrms-live.rule=Host(`hr.muhammadfaza.com`)
+      - traefik.http.routers.hrms-live.entrypoints=websecure
+      - traefik.http.routers.hrms-live.tls=true
+      - traefik.http.routers.hrms-live.tls.certresolver=le
+      - traefik.http.services.hrms-live.loadbalancer.server.port=5000
+
+  hrms-live-db:
+    image: postgres:16-alpine
+    container_name: hrms-live-db
+    restart: unless-stopped
+    mem_limit: 160m
+    memswap_limit: 320m
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    # Postgres defaults assume far more RAM than this box has. These keep it
+    # comfortably inside mem_limit for a small-company dataset.
+    command: >
+      postgres
+        -c shared_buffers=32MB
+        -c effective_cache_size=96MB
+        -c maintenance_work_mem=16MB
+        -c work_mem=2MB
+        -c max_connections=20
+        -c max_wal_size=256MB
+        -c min_wal_size=64MB
+    volumes:
+      - hrms-live-db-data:/var/lib/postgresql/data
+    # No `ports:` and not on `web` — reachable only from hrms-live-app.
+    networks:
+      - hrms-live-internal
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+networks:
+  web:
+    external: true
+  hrms-live-internal:
+    driver: bridge
+
+volumes:
+  hrms-live-db-data:
+  hrms-live-uploads:

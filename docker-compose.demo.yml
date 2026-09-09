@@ -1,10 +1,17 @@
-# PRODUCTION stack for the VPS (202.74.75.193), deployed to ~/hrms/.
+# DEMO stack for the VPS (202.74.75.193), deployed to ~/hrms/ as
+# hrms.muhammadfaza.com. This is the thesis instance: seeded demo data, and the
+# click-to-login account list on the login page.
+#
+# Its sibling is docker-compose.live.yml (~/hrms-live/, hr.muhammadfaza.com),
+# which runs Aisahub's real payroll off the SAME image. The two differ only in
+# environment and container names — nothing here should ever need a code change
+# to keep them apart.
 #
 # Copy this file plus .env to ~/hrms/ on the server. The image is built on a dev
 # machine and shipped in — the VPS has 1GB RAM and must never build (see
 # ~/CLAUDE.md on the box). Use deploy/deploy.sh.
 #
-#   docker compose -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.demo.yml up -d
 #
 # Traefik terminates TLS and reaches hrms-app over the shared `web` network.
 # Postgres sits on hrms-internal only: no published ports, unreachable publicly.
@@ -32,6 +39,8 @@ services:
       DEMO_MODE: "true"
       # Seeds demo data only when the database is empty (see docker-entrypoint.sh).
       SEED_ON_START: ${SEED_ON_START:-true}
+      # Nothing to bootstrap: the seed already creates the roles and the accounts.
+      BOOTSTRAP_ON_START: "false"
     volumes:
       - hrms-uploads:/app/uploads
     networks:
