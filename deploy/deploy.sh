@@ -65,8 +65,22 @@ fi
 # Keep the outgoing image so a rollback is a retag, not a rebuild. The live
 # instance holds real payroll; `docker tag hrms-app:previous hrms-app:deploy &&
 # docker compose up -d` is the fastest way back.
-log "Tagging the image currently on the VPS as :previous"
-$SSH "$SSH_HOST" "docker image inspect $IMAGE >/dev/null 2>&1 && docker tag $IMAGE hrms-app:previous || true"
+#
+# Only retag when the image we are about to load is actually different. The two
+# instances are deployed one run each, so `./deploy/deploy.sh && INSTANCE=live
+# ./deploy/deploy.sh` runs this twice against the same build — and the second run
+# would otherwise overwrite :previous with the image it just loaded, leaving no
+# way back at all.
+LOCAL_ID=$(docker image inspect "$IMAGE" --format '{{.Id}}')
+REMOTE_ID=$($SSH "$SSH_HOST" "docker image inspect $IMAGE --format '{{.Id}}' 2>/dev/null" || true)
+if [ -z "$REMOTE_ID" ]; then
+  log "No $IMAGE on the VPS yet — nothing to keep as :previous"
+elif [ "$REMOTE_ID" = "$LOCAL_ID" ]; then
+  log "VPS already has this exact image — leaving :previous pointing at the older build"
+else
+  log "Tagging the image currently on the VPS as :previous"
+  $SSH "$SSH_HOST" "docker tag $IMAGE hrms-app:previous"
+fi
 
 SIZE=$(docker image inspect "$IMAGE" --format '{{.Size}}' | awk '{printf "%.0f", $1/1024/1024}')
 log "Shipping $IMAGE (~${SIZE}MB uncompressed) over SSH"
