@@ -26,6 +26,10 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@hrms-db:5432/${POSTGRES_DB}?schema=public
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-12h}
+      # Renders the click-to-login account list on the login page. Read at runtime
+      # via GET /api/v1/config — one image serves both instances, so this cannot be
+      # a build-time flag.
+      DEMO_MODE: "true"
       # Seeds demo data only when the database is empty (see docker-entrypoint.sh).
       SEED_ON_START: ${SEED_ON_START:-true}
       OWNER_EMAIL: ${OWNER_EMAIL:-owner@aisahub.com}

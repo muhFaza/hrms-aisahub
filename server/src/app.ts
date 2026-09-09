@@ -33,6 +33,13 @@ app.get('/api/v1/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Public by necessity: the login page reads this before anyone has a token, to
+// decide whether to render the demo click-to-login list. Exposes one boolean and
+// nothing else — keep it that way.
+app.get('/api/v1/config', (_req, res) => {
+  res.json({ demoMode: env.demoMode });
+});
+
 // Public: /auth/login. Everything else (incl. /auth/me) requires a valid JWT.
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/users', authenticate, usersRoutes);

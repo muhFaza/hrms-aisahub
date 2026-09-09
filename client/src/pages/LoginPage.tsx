@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Button, Card, Divider, Form, Input, List, Tag, Typography } from 'antd';
 import { LockOutlined, MailOutlined } from '@ant-design/icons';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext';
+import { fetchConfig } from '../api/config';
 import LogoMark from '../components/LogoMark';
 import { AxiosError } from 'axios';
 
@@ -36,6 +37,25 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   // Which demo account is currently signing in (null when idle).
   const [demoLoading, setDemoLoading] = useState<string | null>(null);
+  // One image serves both the demo and the live instance, so the account list is
+  // gated on a runtime flag rather than a build-time one. Starts false and stays
+  // false if the request fails: this widget prints a shared password on screen and
+  // must never flash in front of real salary data.
+  const [demoMode, setDemoMode] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchConfig()
+      .then((config) => {
+        if (!cancelled) setDemoMode(config.demoMode);
+      })
+      .catch(() => {
+        // Leave it hidden.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Already signed in — both roles land on the dashboard.
   if (user) {
@@ -127,55 +147,59 @@ export default function LoginPage() {
           </Form.Item>
         </Form>
 
-        <Divider plain style={{ fontSize: 12, color: '#8c8c8c', margin: '16px 0' }}>
-          Demo accounts — click to sign in
-        </Divider>
-        <List
-          size="small"
-          split={false}
-          grid={{ column: 2, gutter: 8 }}
-          dataSource={DEMO_ACCOUNTS}
-          renderItem={(account) => {
-            const loading = demoLoading === account.email;
-            return (
-              <List.Item
-                onClick={() => void onDemoClick(account)}
-                style={{
-                  cursor: submitting ? 'not-allowed' : 'pointer',
-                  padding: '6px 8px',
-                  marginBottom: 8,
-                  border: '1px solid #E5E7EB',
-                  borderRadius: 6,
-                  opacity: submitting && !loading ? 0.5 : 1,
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    width: '100%',
-                    gap: 8,
-                  }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <Typography.Text style={{ fontSize: 13 }}>{account.name}</Typography.Text>
-                    <br />
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {account.email}
-                    </Typography.Text>
-                  </div>
-                  <Tag color={account.color} style={{ marginInlineEnd: 0 }}>
-                    {loading ? 'Signing in…' : account.tag}
-                  </Tag>
-                </div>
-              </List.Item>
-            );
-          }}
-        />
-        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
-          Demo credentials — all accounts use password <Typography.Text code>password123</Typography.Text>.
-        </Typography.Text>
+        {demoMode && (
+          <>
+            <Divider plain style={{ fontSize: 12, color: '#8c8c8c', margin: '16px 0' }}>
+              Demo accounts — click to sign in
+            </Divider>
+            <List
+              size="small"
+              split={false}
+              grid={{ column: 2, gutter: 8 }}
+              dataSource={DEMO_ACCOUNTS}
+              renderItem={(account) => {
+                const loading = demoLoading === account.email;
+                return (
+                  <List.Item
+                    onClick={() => void onDemoClick(account)}
+                    style={{
+                      cursor: submitting ? 'not-allowed' : 'pointer',
+                      padding: '6px 8px',
+                      marginBottom: 8,
+                      border: '1px solid #E5E7EB',
+                      borderRadius: 6,
+                      opacity: submitting && !loading ? 0.5 : 1,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        width: '100%',
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <Typography.Text style={{ fontSize: 13 }}>{account.name}</Typography.Text>
+                        <br />
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          {account.email}
+                        </Typography.Text>
+                      </div>
+                      <Tag color={account.color} style={{ marginInlineEnd: 0 }}>
+                        {loading ? 'Signing in…' : account.tag}
+                      </Tag>
+                    </div>
+                  </List.Item>
+                );
+              }}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+              Demo credentials — all accounts use password <Typography.Text code>password123</Typography.Text>.
+            </Typography.Text>
+          </>
+        )}
       </Card>
     </div>
   );
